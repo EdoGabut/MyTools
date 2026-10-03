@@ -9,17 +9,6 @@ local VirtualUser = game:GetService("VirtualUser")
 local player = Players.LocalPlayer
 
 -- ============================================================
--- CLEAR GARDENS (ClearAllChildren)
--- ============================================================
-local g = workspace:FindFirstChild("Gardens")
-if g then
-    g:ClearAllChildren()
-    print("✅ Gardens cleared!")
-else
-    warn("❌ Workspace.Gardens tidak ditemukan")
-end
-
--- ============================================================
 -- CONFIG
 -- ============================================================
 local CONFIG = {
@@ -48,6 +37,9 @@ local CONFIG = {
         "Workspace.NPCS",
         "Workspace.ExplorerStand",
         "Workspace.AuctionStand",
+    },
+    CLEAR_ALL = {
+        "Workspace.Gardens",
     },
     DISABLE_COLLIDER = {
         "Workspace.WitchCauldron",
@@ -99,6 +91,45 @@ local function waitFolder(pathStr)
 end
 
 -- ============================================================
+-- CLEAR WORLD (dari script terpisah)
+-- ============================================================
+local function clearWorld()
+    for _, path in ipairs(CONFIG.DELETE_CHILDREN) do
+        local target = resolvePath(path)
+        if target then
+            for _, child in ipairs(target:GetChildren()) do
+                pcall(function() child:Destroy() end)
+            end
+        end
+    end
+
+    for _, path in ipairs(CONFIG.CLEAR_ALL) do
+        local target = resolvePath(path)
+        if target then
+            pcall(function() target:ClearAllChildren() end)
+        end
+    end
+
+    for _, path in ipairs(CONFIG.DISABLE_COLLIDER) do
+        local target = resolvePath(path)
+        if target then
+            if target:IsA("BasePart") then
+                target.CanCollide = false
+                target.CanTouch = false
+                target.CanQuery = false
+            end
+            for _, d in ipairs(target:GetDescendants()) do
+                if d:IsA("BasePart") then
+                    d.CanCollide = false
+                    d.CanTouch = false
+                    d.CanQuery = false
+                end
+            end
+        end
+    end
+end
+
+-- ============================================================
 -- HELPER: POSITION
 -- ============================================================
 local function findRootPart(model)
@@ -130,37 +161,6 @@ local function getPromptPosition(prompt)
         end
     end
     return nil
-end
-
--- ============================================================
--- CLEANUP MAP
--- ============================================================
-local function cleanMap()
-    for _, path in ipairs(CONFIG.DELETE_CHILDREN) do
-        local target = resolvePath(path)
-        if target then
-            for _, child in ipairs(target:GetChildren()) do
-                pcall(function() child:Destroy() end)
-            end
-        end
-    end
-    for _, path in ipairs(CONFIG.DISABLE_COLLIDER) do
-        local target = resolvePath(path)
-        if target then
-            if target:IsA("BasePart") then
-                target.CanCollide = false
-                if target.CanTouch ~= nil then target.CanTouch = false end
-                if target.CanQuery ~= nil then target.CanQuery = false end
-            end
-            for _, d in ipairs(target:GetDescendants()) do
-                if d:IsA("BasePart") then
-                    d.CanCollide = false
-                    if d.CanTouch ~= nil then d.CanTouch = false end
-                    if d.CanQuery ~= nil then d.CanQuery = false end
-                end
-            end
-        end
-    end
 end
 
 -- ============================================================
@@ -516,7 +516,7 @@ local COLORS = {
     accentOn  = Color3.fromRGB(80, 200, 120),
     accentOff = Color3.fromRGB(55, 55, 65),
     stroke    = Color3.fromRGB(60, 60, 72),
-    btn       = Color3.fromRGB(140, 80, 200),  -- ungu witch vibe
+    btn       = Color3.fromRGB(140, 80, 200),
 }
 
 local screenGui = Instance.new("ScreenGui")
@@ -526,7 +526,7 @@ screenGui.Parent = player:WaitForChild("PlayerGui")
 
 local main = Instance.new("Frame")
 main.Size = UDim2.new(0, 180, 0, 100)
-main.Position = UDim2.new(0, 20, 0.5, -50)   -- ← kiri tengah layar
+main.Position = UDim2.new(0, 20, 0.5, -50)
 main.BackgroundColor3 = COLORS.bg
 main.BorderSizePixel = 0
 main.Active = true
@@ -540,7 +540,6 @@ mainStroke.Thickness = 1
 mainStroke.Transparency = 0.4
 mainStroke.Parent = main
 
--- ===== Toggle row =====
 local toggleRow = Instance.new("Frame")
 toggleRow.Size = UDim2.new(1, -20, 0, 36)
 toggleRow.Position = UDim2.new(0, 10, 0, 10)
@@ -595,7 +594,6 @@ local function setToggle(on)
     toggleLbl.TextColor3 = on and Color3.fromRGB(150, 240, 170) or COLORS.text
 end
 
--- ===== Move to Witch Button =====
 local moveBtn = Instance.new("TextButton")
 moveBtn.Size = UDim2.new(1, -20, 0, 32)
 moveBtn.Position = UDim2.new(0, 10, 0, 56)
@@ -667,7 +665,7 @@ local function stopLoop()
 end
 
 local function startLoop()
-    cleanMap()
+    clearWorld()
     isRunning = true
     setToggle(true)
     task.spawn(mainLoop)
