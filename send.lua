@@ -1,10 +1,13 @@
 -- ============================================================
--- Simple Seed Sender GUI
--- Kirim: Gold, Mega, Rainbow, Briar Rose
--- Auto-ambil count dari backpack (pakai " Seed" di akhir)
+-- Seed Sender GUI (Multi-Select)
+-- - Klik 1 seed → payload 1 item
+-- - Klik 2-5 seed → payload multi-item
+-- - Tombol Kill Character di header
+-- - Username preset: krinjguy67, andri21649, notexd777
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
 
@@ -13,12 +16,19 @@ local remote = ReplicatedStorage:WaitForChild("SharedModules")
 	:WaitForChild("Packet"):WaitForChild("RemoteEvent")
 
 -- ===== SEED CONFIG =====
--- { displayName (buat mail), lookupName (buat cek backpack) }
 local SEEDS = {
-	{ display = "Gold",       lookup = "Gold Seed" },
-	{ display = "Mega",       lookup = "Mega Seed" },
-	{ display = "Rainbow",    lookup = "Rainbow Seed" },
-	{ display = "Briar Rose", lookup = "Briar Rose Seed" },
+	{ display = "Gold",        lookup = "Gold Seed" },
+	{ display = "Mega",        lookup = "Mega Seed" },
+	{ display = "Rainbow",     lookup = "Rainbow Seed" },
+	{ display = "Briar Rose",  lookup = "Briar Rose Seed" },
+	{ display = "Spirethorn", lookup = "Spirethorn Seed" },
+}
+
+-- ===== USERNAME PRESETS =====
+local USERNAME_PRESETS = {
+	"krinjguy67",
+	"andri21649",
+	"notexd777",
 }
 
 -- ===== USERNAME → ID =====
@@ -66,8 +76,8 @@ local function getUserIdFromUsername(username)
 	return nil
 end
 
--- ===== BUILDER PAYLOAD =====
-local function buildMailPayload(targetUserId, itemName, count, category)
+-- ===== BUILDER PAYLOAD (1 item) =====
+local function buildSinglePayload(targetUserId, itemName, count, category)
 	local nameLen = #itemName
 	local catLen = #category
 	if nameLen > 255 or catLen > 255 then return nil end
@@ -110,6 +120,70 @@ local function buildMailPayload(targetUserId, itemName, count, category)
 	buffer.writeu8(buf, pos, 0x00); pos += 1
 	buffer.writeu8(buf, pos, 0x00); pos += 1
 	buffer.writeu8(buf, pos, 0x00); pos += 1
+
+	local final = buffer.create(pos)
+	buffer.copy(final, 0, buf, 0, pos)
+	return final
+end
+
+-- ===== BUILDER PAYLOAD (multi item) =====
+local function buildMultiPayload(targetUserId, items, category)
+	-- items = { { name = "...", count = N }, ... }
+	if #items == 0 then return nil end
+
+	local buf = buffer.create(2048)
+	local pos = 0
+
+	local function writeU8(n)
+		buffer.writeu8(buf, pos, n); pos += 1
+	end
+
+	local function writeString(s)
+		writeU8(0x0B)
+		writeU8(#s)
+		for i = 1, #s do
+			writeU8(string.byte(s, i))
+		end
+	end
+
+	local function writeInt(n)
+		writeU8(0x05)
+		writeU8(n)
+	end
+
+	-- Header
+	writeU8(0x8C)
+	writeU8(0x01)
+	writeU8(0x69)
+	buffer.writef64(buf, pos, targetUserId); pos += 8
+
+	-- Metadata
+	writeU8(0x1C)
+	writeU8(0x05)
+	writeU8(0x01)
+	writeU8(0x1C)
+
+	-- Loop items
+	for i, item in ipairs(items) do
+		writeString("ItemKey")
+		writeString(item.name)
+		writeString("Count")
+		writeInt(item.count)
+		writeString("Category")
+		writeString(category or "Seeds")
+
+		writeU8(0x00)
+		if i < #items then
+			writeU8(0x05)
+			writeU8(i + 1)
+			writeU8(0x1C)
+		end
+	end
+
+	-- Terminator
+	writeU8(0x00)
+	writeU8(0x00)
+	writeU8(0x00)
 
 	local final = buffer.create(pos)
 	buffer.copy(final, 0, buf, 0, pos)
@@ -163,7 +237,6 @@ end
 
 local function lookupCount(map, seedName)
 	if map[seedName] then return map[seedName] end
-
 	local target = seedName:lower():gsub("^%s+", ""):gsub("%s+$", "")
 	for name, count in pairs(map) do
 		local norm = name:lower():gsub("^%s+", ""):gsub("%s+$", "")
@@ -189,12 +262,17 @@ local COLORS = {
 	placeholder = Color3.fromRGB(110, 110, 125),
 	accent    = Color3.fromRGB(60, 130, 200),
 	accentHv  = Color3.fromRGB(80, 160, 230),
+	selected  = Color3.fromRGB(120, 60, 200),
+	selectedHv = Color3.fromRGB(140, 80, 220),
 	green     = Color3.fromRGB(80, 200, 120),
 	greenHv   = Color3.fromRGB(100, 220, 140),
 	red       = Color3.fromRGB(200, 70, 70),
+	redHv     = Color3.fromRGB(220, 90, 90),
 	yellow    = Color3.fromRGB(220, 200, 120),
 	disabled  = Color3.fromRGB(60, 60, 70),
 	stroke    = Color3.fromRGB(60, 60, 72),
+	preset    = Color3.fromRGB(45, 45, 55),
+	presetHv  = Color3.fromRGB(60, 60, 72),
 }
 
 local function corner(p, r)
@@ -202,7 +280,7 @@ local function corner(p, r)
 end
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 300, 0, 320)
+frame.Size = UDim2.new(0, 320, 0, 430)
 frame.Position = UDim2.new(0, 30, 0, 30)
 frame.BackgroundColor3 = COLORS.bg
 frame.BorderSizePixel = 0
@@ -216,7 +294,7 @@ stroke.Color = COLORS.stroke
 stroke.Transparency = 0.4
 stroke.Parent = frame
 
--- Title bar
+-- ===== TITLE BAR =====
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1, 0, 0, 32)
 titleBar.BackgroundColor3 = COLORS.header
@@ -234,7 +312,7 @@ fix.ZIndex = 20
 fix.Parent = titleBar
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -50, 1, 0)
+title.Size = UDim2.new(1, -110, 1, 0)
 title.Position = UDim2.new(0, 14, 0, 0)
 title.BackgroundTransparency = 1
 title.Text = "📨 Seed Sender"
@@ -245,6 +323,22 @@ title.TextXAlignment = Enum.TextXAlignment.Left
 title.ZIndex = 21
 title.Parent = titleBar
 
+-- Kill button
+local killBtn = Instance.new("TextButton")
+killBtn.Size = UDim2.new(0, 22, 0, 22)
+killBtn.Position = UDim2.new(1, -80, 0, 5)
+killBtn.BackgroundColor3 = COLORS.yellow
+killBtn.Text = "💀"
+killBtn.TextColor3 = Color3.fromRGB(30, 30, 30)
+killBtn.Font = Enum.Font.GothamBold
+killBtn.TextSize = 13
+killBtn.BorderSizePixel = 0
+killBtn.AutoButtonColor = false
+killBtn.ZIndex = 21
+killBtn.Parent = titleBar
+corner(killBtn, 6)
+
+-- Close button
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.new(0, 22, 0, 22)
 closeBtn.Position = UDim2.new(1, -28, 0, 5)
@@ -259,7 +353,7 @@ closeBtn.ZIndex = 21
 closeBtn.Parent = titleBar
 corner(closeBtn, 6)
 
--- Username input
+-- ===== USERNAME INPUT =====
 local userBox = Instance.new("TextBox")
 userBox.Size = UDim2.new(1, -24, 0, 34)
 userBox.Position = UDim2.new(0, 12, 0, 44)
@@ -279,13 +373,57 @@ local uPad = Instance.new("UIPadding", userBox)
 uPad.PaddingLeft = UDim.new(0, 10)
 uPad.PaddingRight = UDim.new(0, 10)
 
--- Info label
+-- ===== USERNAME PRESET ROW =====
+local presetRow = Instance.new("Frame")
+presetRow.Size = UDim2.new(1, -24, 0, 24)
+presetRow.Position = UDim2.new(0, 12, 0, 82)
+presetRow.BackgroundTransparency = 1
+presetRow.Parent = frame
+
+local presetLayout = Instance.new("UIListLayout")
+presetLayout.FillDirection = Enum.FillDirection.Horizontal
+presetLayout.Padding = UDim.new(0, 4)
+presetLayout.SortOrder = Enum.SortOrder.LayoutOrder
+presetLayout.Parent = presetRow
+
+for i, uname in ipairs(USERNAME_PRESETS) do
+	local pBtn = Instance.new("TextButton")
+	pBtn.Size = UDim2.new(0, 0, 1, 0)
+	pBtn.AutomaticSize = Enum.AutomaticSize.X
+	pBtn.BackgroundColor3 = COLORS.preset
+	pBtn.Text = uname
+	pBtn.TextColor3 = COLORS.textDim
+	pBtn.Font = Enum.Font.GothamMedium
+	pBtn.TextSize = 10
+	pBtn.BorderSizePixel = 0
+	pBtn.AutoButtonColor = false
+	pBtn.LayoutOrder = i
+	pBtn.Parent = presetRow
+	corner(pBtn, 4)
+	local pad = Instance.new("UIPadding", pBtn)
+	pad.PaddingLeft = UDim.new(0, 8)
+	pad.PaddingRight = UDim.new(0, 8)
+
+	pBtn.MouseButton1Click:Connect(function()
+		userBox.Text = uname
+	end)
+	pBtn.MouseEnter:Connect(function()
+		pBtn.BackgroundColor3 = COLORS.presetHv
+		pBtn.TextColor3 = COLORS.text
+	end)
+	pBtn.MouseLeave:Connect(function()
+		pBtn.BackgroundColor3 = COLORS.preset
+		pBtn.TextColor3 = COLORS.textDim
+	end)
+end
+
+-- ===== INFO LABEL =====
 local infoLbl = Instance.new("TextLabel")
 infoLbl.Size = UDim2.new(1, -24, 0, 22)
-infoLbl.Position = UDim2.new(0, 12, 0, 84)
+infoLbl.Position = UDim2.new(0, 12, 0, 112)
 infoLbl.BackgroundColor3 = COLORS.header
 infoLbl.BorderSizePixel = 0
-infoLbl.Text = "  Isi username lalu klik seed"
+infoLbl.Text = "  Pilih 1-5 seed, isi username, klik SEND"
 infoLbl.TextColor3 = COLORS.textDim
 infoLbl.Font = Enum.Font.Code
 infoLbl.TextSize = 10
@@ -294,7 +432,8 @@ infoLbl.Parent = frame
 corner(infoLbl, 4)
 
 -- ===== SEED BUTTONS =====
-local buttonRefs = {}   -- { [displayName] = { btn, countLbl, count } }
+local buttonRefs = {}
+local selectedSeeds = {}   -- set: [display] = true
 
 local function setInfo(text, color)
 	infoLbl.Text = "  " .. text
@@ -310,13 +449,30 @@ local function refreshCounts()
 			ref.count = count
 			ref.countLbl.Text = "x" .. count
 			ref.countLbl.TextColor3 = (count > 0) and COLORS.green or COLORS.disabled
-			ref.btn.BackgroundColor3 = (count > 0) and COLORS.accent or COLORS.disabled
-			ref.btn.Active = (count > 0)
+
+			-- Update warna tombol
+			if selectedSeeds[seed.display] then
+				ref.btn.BackgroundColor3 = COLORS.selected
+			elseif count > 0 then
+				ref.btn.BackgroundColor3 = COLORS.accent
+			else
+				ref.btn.BackgroundColor3 = COLORS.disabled
+			end
 		end
 	end
 end
 
-local yStart = 114
+local function updateSelectionInfo()
+	local count = 0
+	for _ in pairs(selectedSeeds) do count += 1 end
+	if count == 0 then
+		setInfo("Pilih 1-5 seed, isi username, klik SEND", COLORS.textDim)
+	else
+		setInfo(string.format("%d seed terpilih, isi username lalu klik SEND", count), COLORS.selectedHv)
+	end
+end
+
+local yStart = 142
 local btnHeight = 36
 local btnGap = 6
 
@@ -336,7 +492,6 @@ for i, seed in ipairs(SEEDS) do
 	btn.Parent = frame
 	corner(btn, 6)
 
-	-- Nama seed (kiri)
 	local nameLbl = Instance.new("TextLabel")
 	nameLbl.Size = UDim2.new(1, -70, 1, 0)
 	nameLbl.Position = UDim2.new(0, 12, 0, 0)
@@ -349,7 +504,6 @@ for i, seed in ipairs(SEEDS) do
 	nameLbl.ZIndex = 2
 	nameLbl.Parent = btn
 
-	-- Count (kanan)
 	local countLbl = Instance.new("TextLabel")
 	countLbl.Size = UDim2.new(0, 60, 1, 0)
 	countLbl.Position = UDim2.new(1, -70, 0, 0)
@@ -364,103 +518,183 @@ for i, seed in ipairs(SEEDS) do
 
 	buttonRefs[seed.display] = {
 		btn = btn,
+		nameLbl = nameLbl,
 		countLbl = countLbl,
 		count = 0,
 	}
 
 	-- Hover
 	btn.MouseEnter:Connect(function()
-		if btn.Active then
+		if selectedSeeds[seed.display] then
+			btn.BackgroundColor3 = COLORS.selectedHv
+		elseif btn.Active then
 			btn.BackgroundColor3 = COLORS.accentHv
 		end
 	end)
 	btn.MouseLeave:Connect(function()
-		if btn.Active then
-			btn.BackgroundColor3 = COLORS.accent
-		end
+		refreshCounts()
 	end)
 
-	-- Click: kirim
+	-- Click: toggle selection
 	btn.MouseButton1Click:Connect(function()
-		if not btn.Active then return end
-
-		local username = userBox.Text:gsub("%s", "")
-		if username == "" then
-			setInfo("❌ Isi username dulu", COLORS.red)
-			return
-		end
-
-		-- Re-scan count terbaru
-		local map = scanBackpackMap()
-		local count = lookupCount(map, seed.lookup)
-
+		local count = buttonRefs[seed.display].count
 		if count <= 0 then
 			setInfo("❌ " .. seed.display .. " gak ada di backpack", COLORS.red)
-			refreshCounts()
 			return
 		end
 
-		if count > 255 then
-			setInfo("⚠ " .. seed.display .. " count > 255, kirim 255 aja", COLORS.yellow)
-			count = 255
+		if selectedSeeds[seed.display] then
+			selectedSeeds[seed.display] = nil
+		else
+			-- max 5
+			local n = 0
+			for _ in pairs(selectedSeeds) do n += 1 end
+			if n >= 5 then
+				setInfo("⚠ Max 5 seed per kiriman", COLORS.yellow)
+				return
+			end
+			selectedSeeds[seed.display] = true
 		end
 
-		btn.Active = false
-		nameLbl.Text = "⏳ " .. seed.display
-		setInfo("Resolving username...", COLORS.accent)
-
-		task.spawn(function()
-			-- Resolve username
-			local targetId = getUserIdFromUsername(username)
-
-			if not targetId then
-				nameLbl.Text = "🌱 " .. seed.display
-				btn.Active = true
-				setInfo("❌ Username gak ditemukan", COLORS.red)
-				return
-			end
-
-			-- Build payload & fire
-			setInfo("Mengirim " .. seed.display .. " x" .. count .. "...", COLORS.accent)
-
-			local payload = buildMailPayload(targetId, seed.display, count, "Seeds")
-			if not payload then
-				nameLbl.Text = "🌱 " .. seed.display
-				btn.Active = true
-				setInfo("❌ Payload gagal", COLORS.red)
-				return
-			end
-
-			local ok = pcall(function()
-				remote:FireServer(payload)
-			end)
-
-			if ok then
-				nameLbl.Text = "✅ " .. seed.display
-				btn.BackgroundColor3 = COLORS.green
-				setInfo(string.format("✅ Sent %s x%d", seed.display, count), COLORS.green)
-
-				task.wait(1.5)
-
-				nameLbl.Text = "🌱 " .. seed.display
-				btn.Active = true
-				refreshCounts()
-			else
-				nameLbl.Text = "🌱 " .. seed.display
-				btn.Active = true
-				setInfo("❌ Fire gagal", COLORS.red)
-			end
-		end)
+		refreshCounts()
+		updateSelectionInfo()
 	end)
 end
 
--- Close
+-- ===== SEND BUTTON =====
+local sendBtn = Instance.new("TextButton")
+sendBtn.Size = UDim2.new(1, -24, 0, 38)
+sendBtn.Position = UDim2.new(0, 12, 0, 380)
+sendBtn.BackgroundColor3 = COLORS.green
+sendBtn.Text = "SEND"
+sendBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+sendBtn.Font = Enum.Font.GothamBold
+sendBtn.TextSize = 14
+sendBtn.BorderSizePixel = 0
+sendBtn.AutoButtonColor = false
+sendBtn.Parent = frame
+corner(sendBtn, 8)
+
+local function flashSend(text, color, duration)
+	sendBtn.Text = text
+	sendBtn.BackgroundColor3 = color
+	sendBtn.Active = false
+	task.delay(duration or 1.5, function()
+		sendBtn.Text = "SEND"
+		sendBtn.BackgroundColor3 = COLORS.green
+		sendBtn.Active = true
+	end)
+end
+
+sendBtn.MouseEnter:Connect(function()
+	if sendBtn.Active then
+		sendBtn.BackgroundColor3 = COLORS.greenHv
+	end
+end)
+sendBtn.MouseLeave:Connect(function()
+	if sendBtn.Active then
+		sendBtn.BackgroundColor3 = COLORS.green
+	end
+end)
+
+-- ===== SEND ACTION =====
+sendBtn.MouseButton1Click:Connect(function()
+	-- Collect selected seeds
+	local selectedList = {}
+	for _, seed in ipairs(SEEDS) do
+		if selectedSeeds[seed.display] then
+			local ref = buttonRefs[seed.display]
+			if ref and ref.count > 0 then
+				local count = ref.count
+				if count > 255 then count = 255 end
+				table.insert(selectedList, {
+					name = seed.display,
+					count = count,
+				})
+			end
+		end
+	end
+
+	if #selectedList == 0 then
+		flashSend("❌ Pilih seed dulu", COLORS.red)
+		return
+	end
+
+	local username = userBox.Text:gsub("%s", "")
+	if username == "" then
+		flashSend("❌ Username kosong", COLORS.red)
+		return
+	end
+
+	sendBtn.Text = "⏳ Resolving..."
+	sendBtn.Active = false
+
+	task.spawn(function()
+		local targetId = getUserIdFromUsername(username)
+
+		if not targetId then
+			flashSend("❌ User gak ketemu", COLORS.red)
+			return
+		end
+
+		sendBtn.Text = string.format("⏳ Sending %d...", #selectedList)
+
+		local payload
+		if #selectedList == 1 then
+			-- single item payload
+			payload = buildSinglePayload(targetId, selectedList[1].name, selectedList[1].count, "Seeds")
+		else
+			-- multi item payload
+			payload = buildMultiPayload(targetId, selectedList, "Seeds")
+		end
+
+		if not payload then
+			flashSend("❌ Payload fail", COLORS.red)
+			return
+		end
+
+		local ok = pcall(function()
+			remote:FireServer(payload)
+		end)
+
+		if ok then
+			flashSend(string.format("✅ Sent %d", #selectedList), COLORS.success or COLORS.green, 2)
+
+			-- Reset selection
+			selectedSeeds = {}
+			refreshCounts()
+			updateSelectionInfo()
+		else
+			flashSend("❌ Fire fail", COLORS.red)
+		end
+	end)
+end)
+
+-- ===== KILL CHARACTER =====
+killBtn.MouseButton1Click:Connect(function()
+	local char = player.Character
+	if not char then return end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.Health = 0
+	end
+end)
+
+killBtn.MouseEnter:Connect(function()
+	killBtn.BackgroundColor3 = Color3.fromRGB(255, 220, 140)
+end)
+killBtn.MouseLeave:Connect(function()
+	killBtn.BackgroundColor3 = COLORS.yellow
+end)
+
+-- ===== CLOSE =====
 closeBtn.MouseButton1Click:Connect(function()
 	screenGui:Destroy()
 end)
 
--- Init: refresh count
+-- ===== INIT =====
 refreshCounts()
+updateSelectionInfo()
 
 -- Auto-refresh tiap 2 detik
 task.spawn(function()
