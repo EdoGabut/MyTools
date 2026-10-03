@@ -1,5 +1,5 @@
 -- ============================================================
--- Auto Grind + Night Brew + Auto Claim (Fixed)
+-- Auto Grind + Night Brew + Auto Claim + SeedPack (Night Only)
 -- ============================================================
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -52,13 +52,15 @@ local CONFIG = {
 	NIGHT_START = 18,
 	NIGHT_END = 6,
 
-	NIGHT_WAIT_BEFORE_CHECK = 3,
-	NIGHT_CHECK_DURATION = 3,
-	NIGHT_CHECK_INTERVAL = 0.5,
-
 	CLAIM_ENABLED = true,
 	CLAIM_CHECK_INTERVAL = 1,
 	CLAIM_COOLDOWN = 3,
+
+	NIGHT_WAIT_TIME   = 2,
+	NIGHT_CHECK_TIME  = 3,
+	POST_CLAIM_WAIT   = 3,
+
+	SEEDPACK_NIGHT_ONLY = true,
 
 	DELETE_CHILDREN = {
 		"Workspace.Map.Middle",
@@ -83,13 +85,11 @@ local runToken = 0
 local activeHumanoid = nil
 local lastClickTime = 0
 
-local firedThisNight = false
-local nightHandled = false
-local nightPhase = "idle"
+local phase = "day_farm"
+local phaseStart = 0
 
--- Brew state (global untuk koordinasi)
-local isBrewing = false           -- timer masih aktif
-local brewJustClaimed = false     -- flag: baru aja claim, perlu re-evaluate
+local isBrewing = false
+local claimPending = false
 local lastClaimTime = 0
 
 -- ============================================================
@@ -160,20 +160,17 @@ local function parseTimer(text)
 	return nil
 end
 
--- Cek apakah brew sedang aktif (timer > 0)
 local function checkBrewActive()
 	local lbl = resolvePath(CONFIG.TIMER_PATH)
 	if not lbl or not lbl:IsA("TextLabel") then return false, nil end
 	local text = lbl.Text or ""
 	local sec = parseTimer(text)
-	-- Brew aktif kalau: parse berhasil DAN sec > 0 (belum Ready)
 	if sec and sec > 0 then
 		return true, text
 	end
 	return false, text
 end
 
--- Cek apakah brew Ready (sec == 0 atau text "Ready")
 local function checkBrewReady()
 	local lbl = resolvePath(CONFIG.TIMER_PATH)
 	if not lbl or not lbl:IsA("TextLabel") then return false end
@@ -344,33 +341,50 @@ local function triggerSeedPack(prompt)
 	return true
 end
 
-local function moveToSeedPack(hum, root, prompt, stopDistance, isCancelled)
+-- moveToSeedPack dengan re-evaluate target
+local function moveToSeedPack(hum, root, prompt, stopDistance, isCancelled, getBetterTarget)
 	local t0 = tick()
+	local currentPrompt = prompt
+
 	while true do
 		if isCancelled() then
 			pcall(function() hum:MoveTo(root.Position) end)
-			return "cancelled"
+			return "cancelled", currentPrompt
 		end
 		if not root or not root.Parent or not hum or not hum.Parent then
-			return "cancelled"
+			return "cancelled", currentPrompt
 		end
-		if not prompt or not prompt.Parent then
-			return "target_gone"
+		if not currentPrompt or not currentPrompt.Parent then
+			return "target_gone", currentPrompt
 		end
-		local targetPos = getPromptPosition(prompt)
-		if not targetPos then
-			return "target_gone"
-		end
+
 		local myPos = root.Position
+		local targetPos = getPromptPosition(currentPrompt)
+		if not targetPos then
+			return "target_gone", currentPrompt
+		end
+
 		local dist = (targetPos - myPos).Magnitude
 		if dist <= stopDistance then
 			pcall(function() hum:MoveTo(root.Position) end)
-			return "reached"
+			return "reached", currentPrompt
 		end
 		if tick() - t0 > CONFIG.SEEDPACK_MOVE_TIMEOUT then
 			pcall(function() hum:MoveTo(root.Position) end)
-			return "timeout"
+			return "timeout", currentPrompt
 		end
+
+		if getBetterTarget then
+			local better, betterDist = getBetterTarget(currentPrompt, dist)
+			if better and better ~= currentPrompt then
+				currentPrompt = better
+				targetPos = getPromptPosition(currentPrompt)
+				if not targetPos then
+					return "target_gone", currentPrompt
+				end
+			end
+		end
+
 		hum:MoveTo(targetPos)
 		task.wait(CONFIG.SEEDPACK_MOVE_REFRESH)
 	end
@@ -381,7 +395,7 @@ local function runSeedPackMode(hum, root, myToken, isRunningFn)
 	local handled = false
 
 	while isRunningFn() and myToken == runToken do
-		if isNight() then return true end
+		if not isNight() then return true end
 
 		local now = tick()
 		for prompt, t in pairs(triggeredSet) do
@@ -413,7 +427,7 @@ local function runSeedPackMode(hum, root, myToken, isRunningFn)
 			local currentTarget = nearest
 
 			while isRunningFn() and myToken == runToken do
-				if isNight() then return true end
+				if not isNight() then return true end
 
 				if not currentTarget or not currentTarget.Parent then
 					local newPrompts = getSeedPackPrompts()
@@ -425,11 +439,38 @@ local function runSeedPackMode(hum, root, myToken, isRunningFn)
 					currentTarget = newNearest
 				end
 
-				local result = moveToSeedPack(
+				local function getBetterTarget(currentP, currentDist)
+					local p = getSeedPackPrompts()
+					local bestP, bestDist = nil, math.huge
+					for _, cand in ipairs(p) do
+						if cand and cand.Parent
+							and cand ~= currentP
+							and not triggeredSet[cand]
+						then
+							local pos = getPromptPosition(cand)
+							if pos then
+								local d = (pos - root.Position).Magnitude
+								if d < bestDist then
+									bestDist = d
+									bestP = cand
+								end
+							end
+						end
+					end
+					if bestP and bestDist < (currentDist - 1) then
+						return bestP, bestDist
+					end
+					return nil
+				end
+
+				local result, actualTarget = moveToSeedPack(
 					hum, root, currentTarget,
 					CONFIG.SEEDPACK_STOP_DIST,
-					function() return not isRunningFn() or myToken ~= runToken or isNight() end
+					function() return not isRunningFn() or myToken ~= runToken or not isNight() end,
+					getBetterTarget
 				)
+
+				if actualTarget then currentTarget = actualTarget end
 
 				if result == "cancelled" then break
 				elseif result == "reached" then
@@ -566,129 +607,41 @@ local function lookupCount(map, itemName)
 end
 
 local function fireSpirethorn()
-	local ok = pcall(function()
+	return pcall(function()
 		local args = { buffer.fromstring("\195\000^\016Common Seed Pack") }
 		remote:FireServer(unpack(args))
 	end)
-	return ok
 end
 
 local function fireBriar()
-	local ok = pcall(function()
+	return pcall(function()
 		local args = { buffer.fromstring("\195\0009\nBriar Rose") }
 		remote:FireServer(unpack(args))
 	end)
-	return ok
 end
 
 local function fireClaim()
-	local ok = pcall(function()
+	return pcall(function()
 		local args = { buffer.fromstring("\196\000O") }
 		remote:FireServer(unpack(args))
 	end)
-	return ok
 end
 
 -- ============================================================
--- NIGHT CHECK (fix: skip kalau brew masih aktif)
--- ============================================================
-local function doNightCheck(hum, isRunningFn)
-	if hum and hum.Parent then
-		pcall(function() hum:Move(Vector3.zero, false) end)
-	end
-
-	-- === GUARD: kalau brew masih aktif, skip ===
-	local brewing, timerText = checkBrewActive()
-	if brewing then
-		nightPhase = "brewing"
-		firedThisNight = true  -- malam ini di-skip, tidak perlu cek lagi
-		return
-	end
-
-	-- === FASE 1: WAIT 3 DETIK ===
-	nightPhase = "waiting"
-	local t0 = tick()
-	while tick() - t0 < CONFIG.NIGHT_WAIT_BEFORE_CHECK do
-		if not isRunningFn() then
-			nightPhase = "idle"
-			return
-		end
-		task.wait(0.2)
-	end
-
-	-- === FASE 2: CHECK 3 DETIK ===
-	nightPhase = "checking"
-	local t1 = tick()
-	local fired = false
-
-	while tick() - t1 < CONFIG.NIGHT_CHECK_DURATION do
-		if not isRunningFn() then break end
-
-		local seeds = scanSeedInGui()
-		local map = scanBackpackMap()
-		local brain = lookupCount(map, "Brain")
-
-		local hasSpiret = seeds[CONFIG.SEED_SPIRETHORN]
-		local hasBriar = seeds[CONFIG.SEED_BRIAR]
-		local brainOk = brain >= CONFIG.BRAIN_MIN
-
-		if hasBriar and brainOk then
-			fireBriar()
-			fired = true
-		elseif hasSpiret and hasBriar and not brainOk then
-			fireSpirethorn()
-			fired = true
-		elseif hasSpiret and not hasBriar then
-			fireSpirethorn()
-			fired = true
-		end
-
-		if fired then break end
-
-		task.wait(CONFIG.NIGHT_CHECK_INTERVAL)
-	end
-
-	if fired then
-		nightPhase = "fired"
-	else
-		nightPhase = "no_seed"
-	end
-	firedThisNight = true
-end
-
--- ============================================================
--- CLAIM WATCHER + BREW STATE TRACKER (background)
+-- CLAIM WATCHER
 -- ============================================================
 task.spawn(function()
-	local wasReady = false
-
 	while true do
 		if isRunning and CONFIG.CLAIM_ENABLED then
 			local ready = checkBrewReady()
-			local brewing, _ = checkBrewActive()
+			local brewing = checkBrewActive()
 
-			-- Update brew state
 			isBrewing = brewing
 
-			-- Claim saat Ready
 			if ready and (tick() - lastClaimTime) >= CONFIG.CLAIM_COOLDOWN then
 				lastClaimTime = tick()
 				fireClaim()
-				brewJustClaimed = true
-				wasReady = true
-			else
-				-- Reset flag kalau timer sudah tidak Ready
-				if wasReady and not ready then
-					wasReady = false
-					-- Setelah claim + timer hilang:
-					-- reset night state biar bisa cek seed lagi kalau masih malam
-					if isNight() then
-						firedThisNight = false
-						nightHandled = false
-						nightPhase = "idle"
-					end
-					brewJustClaimed = false
-				end
+				claimPending = true
 			end
 		else
 			isBrewing = false
@@ -699,148 +652,191 @@ task.spawn(function()
 end)
 
 -- ============================================================
--- GUI
+-- GUI — MINIMALIS MOBILE-FRIENDLY
 -- ============================================================
 local COLORS = {
-	bg        = Color3.fromRGB(24, 24, 28),
-	row       = Color3.fromRGB(30, 30, 36),
-	text      = Color3.fromRGB(225, 225, 230),
-	textDim   = Color3.fromRGB(140, 140, 150),
+	bg        = Color3.fromRGB(22, 22, 28),
+	card      = Color3.fromRGB(32, 32, 40),
+	cardAlt   = Color3.fromRGB(38, 38, 48),
+	text      = Color3.fromRGB(235, 235, 240),
+	textDim   = Color3.fromRGB(150, 150, 160),
 	accentOn  = Color3.fromRGB(80, 200, 120),
-	accentOff = Color3.fromRGB(55, 55, 65),
-	stroke    = Color3.fromRGB(60, 60, 72),
+	accentOff = Color3.fromRGB(60, 60, 72),
+	stroke    = Color3.fromRGB(70, 70, 85),
 	night     = Color3.fromRGB(120, 140, 220),
-	day       = Color3.fromRGB(255, 220, 100),
+	day       = Color3.fromRGB(255, 210, 90),
 	green     = Color3.fromRGB(80, 200, 120),
-	red       = Color3.fromRGB(200, 70, 70),
+	red       = Color3.fromRGB(210, 80, 80),
 	yellow    = Color3.fromRGB(230, 190, 120),
-	purple    = Color3.fromRGB(160, 120, 220),
+	purple    = Color3.fromRGB(170, 130, 230),
 }
 
+-- helper shadow
+local function addShadow(parent)
+	local s = Instance.new("UIStroke")
+	s.Color = COLORS.stroke
+	s.Thickness = 1
+	s.Transparency = 0.5
+	s.Parent = parent
+	return s
+end
+
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoGrindBrewCombined"
+screenGui.Name = "AutoGrindBrewMobile"
 screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
+-- ===== MAIN FRAME =====
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0, 200, 0, 200)
-main.Position = UDim2.new(0, 20, 0.5, -100)
+main.Size = UDim2.new(0, 210, 0, 240)
+main.Position = UDim2.new(0, 12, 0, 60)
 main.BackgroundColor3 = COLORS.bg
 main.BorderSizePixel = 0
 main.Active = true
 main.Draggable = true
 main.Parent = screenGui
-Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 12)
+addShadow(main)
 
-local mainStroke = Instance.new("UIStroke")
-mainStroke.Color = COLORS.stroke
-mainStroke.Thickness = 1
-mainStroke.Transparency = 0.4
-mainStroke.Parent = main
+-- ===== HEADER (drag handle + minimize) =====
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, -16, 0, 32)
+header.Position = UDim2.new(0, 8, 0, 8)
+header.BackgroundColor3 = COLORS.card
+header.BorderSizePixel = 0
+header.Parent = main
+Instance.new("UICorner", header).CornerRadius = UDim.new(0, 8)
+
+local titleLbl = Instance.new("TextLabel")
+titleLbl.Size = UDim2.new(1, -80, 1, 0)
+titleLbl.Position = UDim2.new(0, 12, 0, 0)
+titleLbl.BackgroundTransparency = 1
+titleLbl.Text = "Auto Grind + Brew"
+titleLbl.TextColor3 = COLORS.text
+titleLbl.Font = Enum.Font.GothamBold
+titleLbl.TextSize = 12
+titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+titleLbl.Parent = header
 
 local clockPill = Instance.new("TextLabel")
-clockPill.Size = UDim2.new(0, 60, 0, 18)
-clockPill.Position = UDim2.new(1, -70, 0, 6)
+clockPill.Size = UDim2.new(0, 52, 0, 20)
+clockPill.Position = UDim2.new(1, -60, 0.5, -10)
 clockPill.BackgroundColor3 = COLORS.day
 clockPill.Text = "00:00"
-clockPill.TextColor3 = Color3.fromRGB(255, 255, 255)
-clockPill.Font = Enum.Font.Code
-clockPill.TextSize = 10
+clockPill.TextColor3 = Color3.fromRGB(30, 30, 30)
+clockPill.Font = Enum.Font.GothamBold
+clockPill.TextSize = 11
 clockPill.BorderSizePixel = 0
-clockPill.Parent = main
-Instance.new("UICorner", clockPill).CornerRadius = UDim.new(0, 4)
+clockPill.Parent = header
+Instance.new("UICorner", clockPill).CornerRadius = UDim.new(0, 6)
 
-local toggleRow = Instance.new("Frame")
-toggleRow.Size = UDim2.new(1, -20, 0, 36)
-toggleRow.Position = UDim2.new(0, 10, 0, 10)
-toggleRow.BackgroundColor3 = COLORS.row
-toggleRow.BorderSizePixel = 0
-toggleRow.Parent = main
-Instance.new("UICorner", toggleRow).CornerRadius = UDim.new(0, 7)
+-- ===== TOGGLE BUTTON (gede, mobile friendly) =====
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(1, -16, 0, 52)
+toggleBtn.Position = UDim2.new(0, 8, 0, 46)
+toggleBtn.BackgroundColor3 = COLORS.cardAlt
+toggleBtn.BorderSizePixel = 0
+toggleBtn.Text = ""
+toggleBtn.AutoButtonColor = true
+toggleBtn.Parent = main
+Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 10)
+local toggleStroke = addShadow(toggleBtn)
+toggleStroke.Color = COLORS.accentOff
+toggleStroke.Thickness = 2
+toggleStroke.Transparency = 0
 
-local toggleLbl = Instance.new("TextLabel")
-toggleLbl.Size = UDim2.new(1, -70, 1, 0)
-toggleLbl.Position = UDim2.new(0, 12, 0, 0)
-toggleLbl.BackgroundTransparency = 1
-toggleLbl.Text = "Auto Grind + Brew"
-toggleLbl.TextColor3 = COLORS.text
-toggleLbl.Font = Enum.Font.GothamMedium
-toggleLbl.TextSize = 12
-toggleLbl.TextXAlignment = Enum.TextXAlignment.Left
-toggleLbl.Parent = toggleRow
+local toggleIcon = Instance.new("TextLabel")
+toggleIcon.Size = UDim2.new(0, 30, 1, 0)
+toggleIcon.Position = UDim2.new(0, 8, 0, 0)
+toggleIcon.BackgroundTransparency = 1
+toggleIcon.Text = "▶"
+toggleIcon.TextColor3 = COLORS.textDim
+toggleIcon.Font = Enum.Font.GothamBold
+toggleIcon.TextSize = 22
+toggleIcon.Parent = toggleBtn
 
-local track = Instance.new("Frame")
-track.Size = UDim2.new(0, 42, 0, 20)
-track.Position = UDim2.new(1, -54, 0.5, -10)
-track.BackgroundColor3 = COLORS.accentOff
-track.BorderSizePixel = 0
-track.Parent = toggleRow
-Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+local toggleMainLbl = Instance.new("TextLabel")
+toggleMainLbl.Size = UDim2.new(1, -110, 0, 18)
+toggleMainLbl.Position = UDim2.new(0, 44, 0, 8)
+toggleMainLbl.BackgroundTransparency = 1
+toggleMainLbl.Text = "TAP TO START"
+toggleMainLbl.TextColor3 = COLORS.text
+toggleMainLbl.Font = Enum.Font.GothamBold
+toggleMainLbl.TextSize = 13
+toggleMainLbl.TextXAlignment = Enum.TextXAlignment.Left
+toggleMainLbl.Parent = toggleBtn
 
-local knob = Instance.new("Frame")
-knob.Size = UDim2.new(0, 16, 0, 16)
-knob.Position = UDim2.new(0, 2, 0.5, -8)
-knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-knob.BorderSizePixel = 0
-knob.Parent = track
-Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+local toggleSubLbl = Instance.new("TextLabel")
+toggleSubLbl.Size = UDim2.new(1, -110, 0, 16)
+toggleSubLbl.Position = UDim2.new(0, 44, 0, 26)
+toggleSubLbl.BackgroundTransparency = 1
+toggleSubLbl.Text = "idle"
+toggleSubLbl.TextColor3 = COLORS.textDim
+toggleSubLbl.Font = Enum.Font.Gotham
+toggleSubLbl.TextSize = 11
+toggleSubLbl.TextXAlignment = Enum.TextXAlignment.Left
+toggleSubLbl.Parent = toggleBtn
 
-local toggleClick = Instance.new("TextButton")
-toggleClick.Size = UDim2.new(1, 0, 1, 0)
-toggleClick.BackgroundTransparency = 1
-toggleClick.Text = ""
-toggleClick.BorderSizePixel = 0
-toggleClick.Parent = toggleRow
+-- ===== INFO LIST =====
+local infoFrame = Instance.new("Frame")
+infoFrame.Size = UDim2.new(1, -16, 0, 128)
+infoFrame.Position = UDim2.new(0, 8, 0, 104)
+infoFrame.BackgroundColor3 = COLORS.card
+infoFrame.BorderSizePixel = 0
+infoFrame.Parent = main
+Instance.new("UICorner", infoFrame).CornerRadius = UDim.new(0, 10)
 
-local function setToggle(on)
-	TweenService:Create(track, TweenInfo.new(0.15), {
-		BackgroundColor3 = on and COLORS.accentOn or COLORS.accentOff
-	}):Play()
-	TweenService:Create(knob, TweenInfo.new(0.15), {
-		Position = on and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
-	}):Play()
-	toggleLbl.TextColor3 = on and Color3.fromRGB(150, 240, 170) or COLORS.text
-end
-
-local function makeRow(y, label)
+local function makeInfoRow(parent, y, label, initial)
 	local row = Instance.new("Frame")
-	row.Size = UDim2.new(1, -20, 0, 22)
-	row.Position = UDim2.new(0, 10, 0, y)
-	row.BackgroundColor3 = COLORS.row
+	row.Size = UDim2.new(1, -12, 0, 22)
+	row.Position = UDim2.new(0, 6, 0, y)
+	row.BackgroundColor3 = COLORS.cardAlt
 	row.BorderSizePixel = 0
-	row.Parent = main
-	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 5)
+	row.Parent = parent
+	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
 
 	local nameLbl = Instance.new("TextLabel")
-	nameLbl.Size = UDim2.new(1, -60, 1, 0)
-	nameLbl.Position = UDim2.new(0, 8, 0, 0)
+	nameLbl.Size = UDim2.new(1, -70, 1, 0)
+	nameLbl.Position = UDim2.new(0, 10, 0, 0)
 	nameLbl.BackgroundTransparency = 1
 	nameLbl.Text = label
 	nameLbl.TextColor3 = COLORS.text
 	nameLbl.Font = Enum.Font.GothamMedium
-	nameLbl.TextSize = 10
+	nameLbl.TextSize = 11
 	nameLbl.TextXAlignment = Enum.TextXAlignment.Left
 	nameLbl.Parent = row
 
 	local valLbl = Instance.new("TextLabel")
-	valLbl.Size = UDim2.new(0, 55, 1, 0)
-	valLbl.Position = UDim2.new(1, -60, 0, 0)
+	valLbl.Size = UDim2.new(0, 66, 1, 0)
+	valLbl.Position = UDim2.new(1, -72, 0, 0)
 	valLbl.BackgroundTransparency = 1
-	valLbl.Text = "-"
+	valLbl.Text = initial
 	valLbl.TextColor3 = COLORS.textDim
 	valLbl.Font = Enum.Font.GothamBold
-	valLbl.TextSize = 10
+	valLbl.TextSize = 11
 	valLbl.TextXAlignment = Enum.TextXAlignment.Right
 	valLbl.Parent = row
 
 	return valLbl
 end
 
-local rowStatus = makeRow(52, "Status")
-local rowSpiret = makeRow(78, "Spirethorn")
-local rowBriar  = makeRow(104, "Briar Rose")
-local rowBrain  = makeRow(130, "Brain")
-local rowTimer  = makeRow(156, "Timer")
+local rowSpiret = makeInfoRow(infoFrame, 6,   "Spirethorn", "✗ -")
+local rowBriar  = makeInfoRow(infoFrame, 32,  "Briar Rose", "✗ -")
+local rowBrain  = makeInfoRow(infoFrame, 58,  "Brain",      "x0")
+local rowTimer  = makeInfoRow(infoFrame, 84,  "Timer",      "-")
+-- row 110 free 18px, biar nafas
+
+-- ===== TOGGLE LOGIC =====
+local function setToggleUI(on)
+	TweenService:Create(toggleStroke, TweenInfo.new(0.18), {
+		Color = on and COLORS.accentOn or COLORS.accentOff
+	}):Play()
+	toggleIcon.Text = on and "■" or "▶"
+	toggleIcon.TextColor3 = on and COLORS.green or COLORS.textDim
+	toggleMainLbl.Text = on and "RUNNING" or "TAP TO START"
+	toggleMainLbl.TextColor3 = on and Color3.fromRGB(150, 240, 170) or COLORS.text
+end
 
 -- ============================================================
 -- UI UPDATE
@@ -853,6 +849,7 @@ task.spawn(function()
 		local mm = math.floor((clockTime - math.floor(clockTime)) * 60)
 		clockPill.Text = string.format("%02d:%02d", hh, mm)
 		clockPill.BackgroundColor3 = night and COLORS.night or COLORS.day
+		clockPill.TextColor3 = night and Color3.fromRGB(255,255,255) or Color3.fromRGB(30,30,30)
 
 		local seeds = scanSeedInGui()
 		local map = scanBackpackMap()
@@ -860,37 +857,31 @@ task.spawn(function()
 		local timerLbl = resolvePath(CONFIG.TIMER_PATH)
 		local timerText = timerLbl and timerLbl.Text or ""
 
-		-- Status
+		-- sub label status
 		if not isRunning then
-			rowStatus.Text = "idle"
-			rowStatus.TextColor3 = COLORS.textDim
-		elseif isBrewing then
-			rowStatus.Text = "🍺 brewing..."
-			rowStatus.TextColor3 = COLORS.purple
-		elseif not night then
-			rowStatus.Text = "⚔ farming"
-			rowStatus.TextColor3 = COLORS.green
+			toggleSubLbl.Text = "idle"
+			toggleSubLbl.TextColor3 = COLORS.textDim
+		elseif phase == "post_claim" then
+			toggleSubLbl.Text = "✓ claimed, wait"
+			toggleSubLbl.TextColor3 = COLORS.green
+		elseif phase == "brewing" or isBrewing then
+			toggleSubLbl.Text = "🍺 brewing..."
+			toggleSubLbl.TextColor3 = COLORS.purple
+		elseif phase == "night_wait" then
+			toggleSubLbl.Text = "🌙 wait " .. CONFIG.NIGHT_WAIT_TIME .. "s"
+			toggleSubLbl.TextColor3 = COLORS.night
+		elseif phase == "night_check" then
+			toggleSubLbl.Text = "🔍 checking..."
+			toggleSubLbl.TextColor3 = COLORS.yellow
+		elseif phase == "night_farm" then
+			toggleSubLbl.Text = "🌙📦 seedpack"
+			toggleSubLbl.TextColor3 = COLORS.green
+		elseif phase == "day_farm" and not night then
+			toggleSubLbl.Text = "⚔ farming"
+			toggleSubLbl.TextColor3 = COLORS.green
 		else
-			-- Malam, tidak brewing
-			if nightPhase == "waiting" then
-				rowStatus.Text = "🌙 wait " .. CONFIG.NIGHT_WAIT_BEFORE_CHECK .. "s"
-				rowStatus.TextColor3 = COLORS.night
-			elseif nightPhase == "checking" then
-				rowStatus.Text = "🔍 checking..."
-				rowStatus.TextColor3 = COLORS.yellow
-			elseif nightPhase == "fired" then
-				rowStatus.Text = "✓ FIRED"
-				rowStatus.TextColor3 = COLORS.green
-			elseif nightPhase == "no_seed" then
-				rowStatus.Text = "💤 no seed"
-				rowStatus.TextColor3 = COLORS.textDim
-			elseif nightPhase == "brewing" then
-				rowStatus.Text = "🍺 brewing"
-				rowStatus.TextColor3 = COLORS.purple
-			else
-				rowStatus.Text = "🌙 night"
-				rowStatus.TextColor3 = COLORS.night
-			end
+			toggleSubLbl.Text = "🌙 night"
+			toggleSubLbl.TextColor3 = COLORS.night
 		end
 
 		if seeds[CONFIG.SEED_SPIRETHORN] then
@@ -932,6 +923,11 @@ end)
 -- ============================================================
 -- MAIN LOOP
 -- ============================================================
+local function enterPhase(newPhase)
+	phase = newPhase
+	phaseStart = tick()
+end
+
 local function mainLoop()
 	local monsterFolder = waitFolder(CONFIG.MONSTER_FOLDER)
 	local pumpkinFolder = waitFolder(CONFIG.PUMPKIN_FOLDER)
@@ -950,120 +946,188 @@ local function mainLoop()
 
 	runToken += 1
 	local myToken = runToken
+	local function isRunningFn() return isRunning and myToken == runToken end
+
+	claimPending = false
+	enterPhase("day_farm")
 
 	local currentTarget = nil
 	local currentKind = nil
 	local lastSearch = 0
 
-	local function isRunningFn() return isRunning and myToken == runToken end
+	local function doFarm()
+		hum.WalkSpeed = CONFIG.WALK_SPEED
+		local myPos = root.Position
+		local now = tick()
+
+		local targetRp
+		if currentTarget and currentTarget.Parent then
+			if currentTarget:IsA("Model") then
+				targetRp = findRootPart(currentTarget)
+			elseif currentTarget:IsA("BasePart") then
+				targetRp = currentTarget
+			end
+		end
+		if not currentTarget or not currentTarget.Parent or not targetRp then
+			currentTarget = nil
+			currentKind = nil
+		end
+
+		if not currentTarget and (now - lastSearch) >= 0.3 then
+			lastSearch = now
+			local best, _, kind = findBestFarmTarget(monsterFolder, pumpkinFolder, myPos)
+			if best then
+				currentTarget = best
+				currentKind = kind
+			end
+		end
+
+		if not currentTarget then
+			hum:Move(Vector3.zero, false)
+			task.wait(0.15)
+			return
+		end
+
+		targetRp = (currentTarget:IsA("Model") and findRootPart(currentTarget))
+			or (currentTarget:IsA("BasePart") and currentTarget)
+			or nil
+
+		if targetRp then
+			local targetPos = targetRp.Position
+			local flatDir = Vector3.new(targetPos.X - myPos.X, 0, targetPos.Z - myPos.Z)
+			local distance = flatDir.Magnitude
+			local range = (currentKind == "pumpkin") and CONFIG.PUMPKIN_RANGE or CONFIG.MONSTER_RANGE
+
+			if distance <= range then
+				hum:Move(Vector3.zero, false)
+				local lookAt = CFrame.lookAt(myPos, Vector3.new(targetPos.X, myPos.Y, targetPos.Z))
+				root.CFrame = CFrame.new(myPos) * (lookAt - lookAt.Position)
+
+				local tnow = tick()
+				if (tnow - lastClickTime) >= CONFIG.ATTACK_COOLDOWN then
+					lastClickTime = tnow
+					clickLMB()
+				end
+				task.wait(0.03)
+			else
+				local goal = Vector3.new(targetPos.X, myPos.Y, targetPos.Z)
+				hum:MoveTo(goal)
+				task.wait(CONFIG.RETARGET_INTERVAL)
+			end
+		end
+	end
+
+	local function doNightFarm()
+		if isNight() and CONFIG.SEEDPACK_NIGHT_ONLY then
+			local prompts = getSeedPackPrompts()
+			if #prompts > 0 then
+				runSeedPackMode(hum, root, myToken, isRunningFn)
+				currentTarget = nil
+				currentKind = nil
+				lastSearch = 0
+				return
+			end
+		end
+		doFarm()
+	end
+
+	local function doNightScanFire()
+		local seeds = scanSeedInGui()
+		local map = scanBackpackMap()
+		local brain = lookupCount(map, "Brain")
+
+		local hasSpiret = seeds[CONFIG.SEED_SPIRETHORN]
+		local hasBriar = seeds[CONFIG.SEED_BRIAR]
+		local brainOk = brain >= CONFIG.BRAIN_MIN
+
+		if hasBriar and brainOk then
+			fireBriar()
+			return true
+		elseif hasSpiret and hasBriar and not brainOk then
+			fireSpirethorn()
+			return true
+		elseif hasSpiret and not hasBriar then
+			fireSpirethorn()
+			return true
+		end
+		return false
+	end
 
 	while isRunningFn() and hum.Health > 0 do
 		if not root.Parent then break end
 
 		local night = isNight()
+		local now = tick()
 
-		-- === CEK BREW STATE ===
-		local brewing = checkBrewActive()
-		isBrewing = brewing
-
-		-- Kalau brew aktif → skip semua logic night, lanjut farming
-		if brewing then
-			-- Update phase kalau night
-			if night and nightPhase ~= "brewing" then
-				nightPhase = "brewing"
-				nightHandled = true
-				firedThisNight = true
-			end
-		else
-			-- Brew tidak aktif
-			-- Malam + belum handle → cek seed
-			if night and not nightHandled then
-				nightHandled = true
-				firedThisNight = false
-
-				hum:Move(Vector3.zero, false)
-				doNightCheck(hum, isRunningFn)
-
-				currentTarget = nil
-				currentKind = nil
-				lastSearch = 0
-				task.wait(0.3)
-			end
-
-			-- Siang → reset
-			if not night and nightHandled then
-				nightHandled = false
-				firedThisNight = false
-				nightPhase = "idle"
-			end
+		if claimPending then
+			claimPending = false
+			hum:Move(Vector3.zero, false)
+			enterPhase("post_claim")
 		end
 
-		-- Prioritas 1: SeedPack
-		local seedPackPrompts = getSeedPackPrompts()
-		if #seedPackPrompts > 0 then
-			runSeedPackMode(hum, root, myToken, isRunningFn)
-			currentTarget = nil
-			currentKind = nil
-			lastSearch = 0
-		else
-			-- Prioritas 2: Farm
-			hum.WalkSpeed = CONFIG.WALK_SPEED
-			local myPos = root.Position
-			local now = tick()
-
-			local targetRp
-			if currentTarget and currentTarget.Parent then
-				if currentTarget:IsA("Model") then
-					targetRp = findRootPart(currentTarget)
-				elseif currentTarget:IsA("BasePart") then
-					targetRp = currentTarget
-				end
-			end
-			if not currentTarget or not currentTarget.Parent or not targetRp then
-				currentTarget = nil
-				currentKind = nil
-			end
-
-			if not currentTarget and (now - lastSearch) >= 0.3 then
-				lastSearch = now
-				local best, _, kind = findBestFarmTarget(monsterFolder, pumpkinFolder, myPos)
-				if best then
-					currentTarget = best
-					currentKind = kind
+		if phase == "post_claim" then
+			hum:Move(Vector3.zero, false)
+			if (now - phaseStart) >= CONFIG.POST_CLAIM_WAIT then
+				if isNight() then
+					enterPhase("night_wait")
+				else
+					enterPhase("day_farm")
 				end
 			end
 
-			if not currentTarget then
-				hum:Move(Vector3.zero, false)
-				task.wait(0.15)
+		elseif phase == "night_wait" then
+			hum:Move(Vector3.zero, false)
+			if not night then
+				enterPhase("day_farm")
+			elseif (now - phaseStart) >= CONFIG.NIGHT_WAIT_TIME then
+				enterPhase("night_check")
+			end
+
+		elseif phase == "night_check" then
+			if not night then
+				enterPhase("day_farm")
+			elseif (now - phaseStart) >= CONFIG.NIGHT_CHECK_TIME then
+				if isBrewing then
+					enterPhase("brewing")
+				else
+					enterPhase("night_farm")
+				end
 			else
-				targetRp = (currentTarget:IsA("Model") and findRootPart(currentTarget))
-					or (currentTarget:IsA("BasePart") and currentTarget)
-					or nil
-
-				if targetRp then
-					local targetPos = targetRp.Position
-					local flatDir = Vector3.new(targetPos.X - myPos.X, 0, targetPos.Z - myPos.Z)
-					local distance = flatDir.Magnitude
-					local range = (currentKind == "pumpkin") and CONFIG.PUMPKIN_RANGE or CONFIG.MONSTER_RANGE
-
-					if distance <= range then
-						hum:Move(Vector3.zero, false)
-						local lookAt = CFrame.lookAt(myPos, Vector3.new(targetPos.X, myPos.Y, targetPos.Z))
-						root.CFrame = CFrame.new(myPos) * (lookAt - lookAt.Position)
-
-						local tnow = tick()
-						if (tnow - lastClickTime) >= CONFIG.ATTACK_COOLDOWN then
-							lastClickTime = tnow
-							clickLMB()
-						end
-						task.wait(0.03)
-					else
-						local goal = Vector3.new(targetPos.X, myPos.Y, targetPos.Z)
-						hum:MoveTo(goal)
-						task.wait(CONFIG.RETARGET_INTERVAL)
-					end
+				hum:Move(Vector3.zero, false)
+				local fired = doNightScanFire()
+				if fired then
+					enterPhase("brewing")
+				else
+					task.wait(CONFIG.NIGHT_CHECK_INTERVAL)
 				end
+			end
+
+		elseif phase == "night_farm" then
+			if not night then
+				enterPhase("day_farm")
+			elseif isBrewing then
+				enterPhase("brewing")
+			else
+				doNightFarm()
+			end
+
+		elseif phase == "brewing" then
+			if not isBrewing then
+				enterPhase(isNight() and "night_farm" or "day_farm")
+			else
+				if isNight() then
+					doNightFarm()
+				else
+					doFarm()
+				end
+			end
+
+		else -- day_farm
+			if night then
+				hum:Move(Vector3.zero, false)
+				enterPhase("night_wait")
+			else
+				doFarm()
 			end
 		end
 	end
@@ -1080,14 +1144,12 @@ end
 local function stopLoop()
 	isRunning = false
 	runToken += 1
-	setToggle(false)
+	setToggleUI(false)
 	releaseE()
 
-	nightPhase = "idle"
-	nightHandled = false
-	firedThisNight = false
+	phase = "day_farm"
 	isBrewing = false
-	brewJustClaimed = false
+	claimPending = false
 
 	local hum = activeHumanoid
 	activeHumanoid = nil
@@ -1103,16 +1165,15 @@ end
 local function startLoop()
 	clearWorld()
 	isRunning = true
-	firedThisNight = false
-	nightHandled = false
-	nightPhase = "idle"
+	phase = "day_farm"
+	phaseStart = tick()
 	isBrewing = false
-	brewJustClaimed = false
-	setToggle(true)
+	claimPending = false
+	setToggleUI(true)
 	task.spawn(mainLoop)
 end
 
-toggleClick.MouseButton1Click:Connect(function()
+toggleBtn.MouseButton1Click:Connect(function()
 	if isRunning then
 		stopLoop()
 	else
