@@ -1,13 +1,14 @@
 -- ============================================================
--- Seed Sender Minimalis v2
--- - Info seed ringkas (1 baris teks)
--- - Button SEND dengan auto payload (1-5 jenis)
--- - Username preset: krinjguy67, andri21649, notexd777
+-- Seed Sender v3
+-- - Auto-send: 1 Briar Rose ATAU 5 Spirethorn → langsung kirim
+-- - Log panel: nampilin history kirim ke siapa
+-- - Minimize button
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 
@@ -31,6 +32,21 @@ local BACKPACK_PATH = { "BackpackGui", "Backpack", "Inventory", "ScrollingFrame"
 local TOOL_NAME_LABEL  = "ToolName"
 local TOOL_COUNT_LABEL = "ToolCount"
 
+-- Auto-send rules: begitu salah satu kondisi terpenuhi → kirim
+local AUTO_SEND = {
+	ENABLED = true,
+	-- kirim semua seed yang ada begitu trigger terpenuhi
+	TRIGGERS = {
+		{ display = "Briar Rose", min = 1 },   -- ≥1 Briar Rose
+		{ display = "Spirethorn", min = 5 },   -- ≥5 Spirethorn
+	},
+	-- username target (kalau nil, ambil dari preset pertama atau input manual)
+	TARGET_MODE = "manual",  -- "manual" | "rotate" | "fixed"
+	FIXED_TARGET = "krinjguy67",
+	-- jeda minimum antar auto-send (biar nggak spam)
+	COOLDOWN = 3,
+}
+
 -- ===== USERNAME → ID =====
 local idCache = {}
 
@@ -47,7 +63,6 @@ local function getUserIdFromUsername(username)
 		return result
 	end
 
-	local HttpService = game:GetService("HttpService")
 	local ok2, response = pcall(function()
 		return request({
 			Url = "https://users.roblox.com/v1/usernames/users",
@@ -189,13 +204,8 @@ local function lookupCount(map, itemName)
 end
 
 -- ============================================================
--- ===== BUILD GUI (MINIMALIS) =====
+-- GUI
 -- ============================================================
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "SeedSenderMini"
-screenGui.ResetOnSpawn = false
-screenGui.Parent = player:WaitForChild("PlayerGui")
-
 local COLORS = {
 	bg        = Color3.fromRGB(22, 22, 28),
 	header    = Color3.fromRGB(16, 16, 20),
@@ -210,6 +220,8 @@ local COLORS = {
 	stroke    = Color3.fromRGB(60, 60, 72),
 	preset    = Color3.fromRGB(45, 45, 55),
 	presetHv  = Color3.fromRGB(60, 60, 72),
+	yellow    = Color3.fromRGB(230, 190, 120),
+	logBg     = Color3.fromRGB(14, 14, 18),
 }
 
 local function corner(p, r)
@@ -217,7 +229,7 @@ local function corner(p, r)
 end
 
 local FRAME_WIDTH = 250
-local FRAME_HEIGHT = 178
+local FRAME_HEIGHT = 260   -- lebih tinggi karena ada log
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
@@ -228,27 +240,37 @@ frame.Active = true
 frame.Parent = screenGui
 corner(frame, 12)
 
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "SeedSenderMini"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = player:WaitForChild("PlayerGui")
+-- (pindah ke atas setelah instance dibuat)
+frame.Parent = screenGui
+
 local stroke = Instance.new("UIStroke")
 stroke.Color = COLORS.stroke
 stroke.Transparency = 0.4
 stroke.Parent = frame
 
--- Drag (touch friendly)
+-- Drag
 local dragging, dragStart, startPos
-frame.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1
-		or input.UserInputType == Enum.UserInputType.Touch then
-		dragging = true
-		dragStart = input.Position
-		startPos = frame.Position
-	end
-end)
-frame.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1
-		or input.UserInputType == Enum.UserInputType.Touch then
-		dragging = false
-	end
-end)
+local function bindDrag(handle)
+	handle.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = frame.Position
+		end
+	end)
+	handle.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+end
+bindDrag(frame)
 UserInputService.InputChanged:Connect(function(input)
 	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
 		or input.UserInputType == Enum.UserInputType.Touch) then
@@ -260,7 +282,7 @@ UserInputService.InputChanged:Connect(function(input)
 	end
 end)
 
--- Title bar
+-- ===== TITLE BAR =====
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1, 0, 0, 30)
 titleBar.BackgroundColor3 = COLORS.header
@@ -278,7 +300,7 @@ fix.ZIndex = 20
 fix.Parent = titleBar
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -50, 1, 0)
+title.Size = UDim2.new(1, -80, 1, 0)
 title.Position = UDim2.new(0, 12, 0, 0)
 title.BackgroundTransparency = 1
 title.Text = "📨 Seed Sender"
@@ -289,34 +311,40 @@ title.TextXAlignment = Enum.TextXAlignment.Left
 title.ZIndex = 21
 title.Parent = titleBar
 
-local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 22, 0, 22)
-closeBtn.Position = UDim2.new(1, -28, 0, 4)
-closeBtn.BackgroundColor3 = COLORS.red
-closeBtn.Text = "×"
-closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 14
-closeBtn.BorderSizePixel = 0
-closeBtn.AutoButtonColor = false
-closeBtn.ZIndex = 21
-closeBtn.Parent = titleBar
-corner(closeBtn, 6)
+local function makeTitleBtn(xOffset, bg, txt)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(0, 22, 0, 22)
+	b.Position = UDim2.new(1, xOffset, 0, 4)
+	b.BackgroundColor3 = bg
+	b.Text = txt
+	b.TextColor3 = Color3.fromRGB(255, 255, 255)
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 14
+	b.BorderSizePixel = 0
+	b.AutoButtonColor = false
+	b.ZIndex = 21
+	b.Parent = titleBar
+	corner(b, 6)
+	return b
+end
 
--- Body
+local minimizeBtn = makeTitleBtn(-54, COLORS.preset, "—")
+local closeBtn    = makeTitleBtn(-28, COLORS.red,    "×")
+
+-- ===== BODY =====
 local body = Instance.new("Frame")
 body.Size = UDim2.new(1, -16, 1, -38)
 body.Position = UDim2.new(0, 8, 0, 34)
 body.BackgroundTransparency = 1
 body.Parent = frame
 
--- ===== USERNAME INPUT =====
+-- Username input
 local userBox = Instance.new("TextBox")
 userBox.Size = UDim2.new(1, 0, 0, 32)
 userBox.Position = UDim2.new(0, 0, 0, 0)
 userBox.BackgroundColor3 = COLORS.input
 userBox.Text = ""
-userBox.PlaceholderText = "Username / ID"
+userBox.PlaceholderText = "Username / ID (target)"
 userBox.TextColor3 = COLORS.text
 userBox.PlaceholderColor3 = COLORS.placeholder
 userBox.Font = Enum.Font.GothamMedium
@@ -330,7 +358,7 @@ local uPad = Instance.new("UIPadding", userBox)
 uPad.PaddingLeft = UDim.new(0, 10)
 uPad.PaddingRight = UDim.new(0, 10)
 
--- ===== USERNAME PRESETS =====
+-- Preset row
 local presetRow = Instance.new("Frame")
 presetRow.Size = UDim2.new(1, 0, 0, 22)
 presetRow.Position = UDim2.new(0, 0, 0, 36)
@@ -374,9 +402,9 @@ for i, uname in ipairs(USERNAME_PRESETS) do
 	end)
 end
 
--- ===== INFO SEED (1 BARIS RINGKAS) =====
+-- Info seed (1 baris ringkas)
 local infoLbl = Instance.new("TextLabel")
-infoLbl.Size = UDim2.new(1, 0, 0, 26)
+infoLbl.Size = UDim2.new(1, 0, 0, 24)
 infoLbl.Position = UDim2.new(0, 0, 0, 62)
 infoLbl.BackgroundColor3 = COLORS.header
 infoLbl.BorderSizePixel = 0
@@ -392,6 +420,27 @@ local iPad = Instance.new("UIPadding", infoLbl)
 iPad.PaddingLeft = UDim.new(0, 8)
 iPad.PaddingRight = UDim.new(0, 8)
 
+-- ===== LOG PANEL =====
+local logLbl = Instance.new("TextLabel")
+logLbl.Size = UDim2.new(1, 0, 0, 58)
+logLbl.Position = UDim2.new(0, 0, 0, 90)
+logLbl.BackgroundColor3 = COLORS.logBg
+logLbl.BorderSizePixel = 0
+logLbl.Text = "📜 Log:\n  (belum ada aktivitas)"
+logLbl.TextColor3 = COLORS.textDim
+logLbl.Font = Enum.Font.Code
+logLbl.TextSize = 10
+logLbl.TextXAlignment = Enum.TextXAlignment.Left
+logLbl.TextYAlignment = Enum.TextYAlignment.Top
+logLbl.TextWrapped = true
+logLbl.Parent = body
+corner(logLbl, 6)
+local lPad = Instance.new("UIPadding", logLbl)
+lPad.PaddingLeft = UDim.new(0, 8)
+lPad.PaddingRight = UDim.new(0, 8)
+lPad.PaddingTop = UDim.new(0, 4)
+lPad.PaddingBottom = UDim.new(0, 4)
+
 -- ===== SEND BUTTON =====
 local sendBtn = Instance.new("TextButton")
 sendBtn.Size = UDim2.new(1, 0, 0, 36)
@@ -406,8 +455,23 @@ sendBtn.AutoButtonColor = false
 sendBtn.Parent = body
 corner(sendBtn, 8)
 
--- ===== STATE =====
-local currentCounts = {} -- [display] = count
+-- ============================================================
+-- STATE
+-- ============================================================
+local currentCounts = {}
+local lastSendTime = 0
+local logLines = {}
+local MAX_LOG_LINES = 4
+
+local function pushLog(line)
+	local time = os.date("%H:%M:%S")
+	local entry = string.format("[%s] %s", time, line)
+	table.insert(logLines, 1, entry)  -- newest di atas
+	while #logLines > MAX_LOG_LINES do
+		table.remove(logLines)
+	end
+	logLbl.Text = "📜 Log:\n" .. table.concat(logLines, "\n")
+end
 
 local function refreshStatus()
 	local combined = scanAll()
@@ -432,103 +496,202 @@ local function refreshStatus()
 	end
 end
 
--- ===== SEND ACTION =====
+-- ============================================================
+-- SEND LOGIC
+-- ============================================================
 local function flashSend(text, color, duration)
 	sendBtn.Text = text
 	sendBtn.BackgroundColor3 = color
-	sendBtn.Active = false
 	task.delay(duration or 1.5, function()
 		sendBtn.Text = "SEND"
 		sendBtn.BackgroundColor3 = COLORS.green
-		sendBtn.Active = true
 	end)
 end
 
-sendBtn.MouseButton1Click:Connect(function()
-	refreshStatus()
-
-	local sendItems = {}
+-- Kumpulkan seed yang mau dikirim (semua yang count > 0)
+local function collectSendItems()
+	local items = {}
 	for _, seed in ipairs(SEEDS) do
 		local count = currentCounts[seed.display] or 0
 		if count > 0 then
-			table.insert(sendItems, {
+			table.insert(items, {
 				name = seed.display,
 				count = math.min(count, 255),
 			})
 		end
 	end
+	return items
+end
 
-	if #sendItems == 0 then
-		flashSend("❌ Gak ada seed", COLORS.red)
-		return
+-- Kirim ke username, return true/false + pesan
+local function doSend(username)
+	if username == "" then
+		return false, "username kosong"
 	end
+
+	local items = collectSendItems()
+	if #items == 0 then
+		return false, "gak ada seed"
+	end
+
+	local targetId = getUserIdFromUsername(username)
+	if not targetId then
+		return false, "user '" .. username .. "' gak ketemu"
+	end
+
+	local payload
+	if #items == 1 then
+		payload = buildSinglePayload(targetId, items[1].name, items[1].count, "Seeds")
+	else
+		payload = buildMultiPayload(targetId, items, "Seeds")
+	end
+
+	if not payload then
+		return false, "payload fail"
+	end
+
+	local ok = pcall(function()
+		remote:FireServer(payload)
+	end)
+
+	if not ok then
+		return false, "fire fail"
+	end
+
+	-- ringkasan item
+	local itemStr = {}
+	for _, it in ipairs(items) do
+		table.insert(itemStr, string.format("%s x%d", it.name, it.count))
+	end
+	return true, string.format("→ %s (%s)", username, table.concat(itemStr, ", "))
+end
+
+-- Cek apakah trigger auto-send terpenuhi
+local function checkAutoTrigger()
+	if not AUTO_SEND.ENABLED then return false end
+	for _, trig in ipairs(AUTO_SEND.TRIGGERS) do
+		local cnt = currentCounts[trig.display] or 0
+		if cnt >= trig.min then
+			return true, trig
+		end
+	end
+	return false
+end
+
+-- Ambil username target auto
+local function getAutoTarget()
+	if AUTO_SEND.TARGET_MODE == "fixed" then
+		return AUTO_SEND.FIXED_TARGET
+	elseif AUTO_SEND.TARGET_MODE == "rotate" then
+		-- rotasi preset (belum diimplement state, fallback ke pertama)
+		return USERNAME_PRESETS[1]
+	else
+		-- manual: ambil dari input kalau ada, kalau kosong pakai preset pertama
+		local manual = userBox.Text:gsub("%s", "")
+		if manual ~= "" then return manual end
+		return USERNAME_PRESETS[1]
+	end
+end
+
+-- ============================================================
+-- MANUAL SEND BUTTON
+-- ============================================================
+sendBtn.MouseButton1Click:Connect(function()
+	refreshStatus()
 
 	local username = userBox.Text:gsub("%s", "")
 	if username == "" then
-		flashSend("❌ Isi username", COLORS.red)
-		return
+		username = getAutoTarget()
+		userBox.Text = username
 	end
 
-	sendBtn.Text = "⏳ Loading..."
-	sendBtn.Active = false
+	sendBtn.Text = "⏳ Sending..."
+	sendBtn.BackgroundColor3 = COLORS.yellow
 
 	task.spawn(function()
-		local targetId = getUserIdFromUsername(username)
-		if not targetId then
-			flashSend("❌ User gak ketemu", COLORS.red)
-			return
-		end
-
-		local payload
-		if #sendItems == 1 then
-			payload = buildSinglePayload(targetId, sendItems[1].name, sendItems[1].count, "Seeds")
-		else
-			payload = buildMultiPayload(targetId, sendItems, "Seeds")
-		end
-
-		if not payload then
-			flashSend("❌ Payload fail", COLORS.red)
-			return
-		end
-
-		sendBtn.Text = string.format("⏳ Send %d...", #sendItems)
-
-		local ok = pcall(function()
-			remote:FireServer(payload)
-		end)
-
+		local ok, msg = doSend(username)
 		if ok then
-			flashSend(string.format("✅ %d jenis", #sendItems), COLORS.green, 2)
-			task.wait(1.5)
-			refreshStatus()
+			pushLog("✅ " .. msg)
+			flashSend("✅ Terkirim", COLORS.green, 2)
 		else
-			flashSend("❌ Fire fail", COLORS.red)
+			pushLog("❌ Gagal: " .. msg)
+			flashSend("❌ " .. msg, COLORS.red, 2)
 		end
+		task.wait(1.5)
+		refreshStatus()
 	end)
 end)
 
 sendBtn.MouseEnter:Connect(function()
-	if sendBtn.Active then
+	if sendBtn.BackgroundColor3 == COLORS.green then
 		TweenService:Create(sendBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.greenHv }):Play()
 	end
 end)
 sendBtn.MouseLeave:Connect(function()
-	if sendBtn.Active then
+	if sendBtn.BackgroundColor3 == COLORS.greenHv then
 		TweenService:Create(sendBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.green }):Play()
 	end
 end)
 
--- ===== CLOSE =====
+-- ============================================================
+-- AUTO-SEND LOOP
+-- ============================================================
+task.spawn(function()
+	while screenGui.Parent do
+		refreshStatus()
+
+		if AUTO_SEND.ENABLED and (tick() - lastSendTime) >= AUTO_SEND.COOLDOWN then
+			local triggered, trig = checkAutoTrigger()
+			if triggered then
+				local target = getAutoTarget()
+				lastSendTime = tick()
+				pushLog(string.format("🔔 Trigger: %s x%d", trig.display, currentCounts[trig.display] or 0))
+
+				task.spawn(function()
+					local ok, msg = doSend(target)
+					if ok then
+						pushLog("✅ AUTO " .. msg)
+					else
+						pushLog("❌ AUTO gagal: " .. msg)
+					end
+				end)
+			end
+		end
+
+		task.wait(1)
+	end
+end)
+
+-- ============================================================
+-- MINIMIZE / CLOSE
+-- ============================================================
+local minimized = false
+local savedSize = FRAME_HEIGHT
+
+minimizeBtn.MouseButton1Click:Connect(function()
+	minimized = not minimized
+	if minimized then
+		savedSize = frame.Size.Y.Offset
+		TweenService:Create(frame, TweenInfo.new(0.2), {
+			Size = UDim2.new(0, FRAME_WIDTH, 0, 30)
+		}):Play()
+		body.Visible = false
+		title.Text = "📨 Seed Sender (—)"
+	else
+		TweenService:Create(frame, TweenInfo.new(0.2), {
+			Size = UDim2.new(0, FRAME_WIDTH, 0, savedSize)
+		}):Play()
+		body.Visible = true
+		title.Text = "📨 Seed Sender"
+	end
+end)
+
 closeBtn.MouseButton1Click:Connect(function()
 	screenGui:Destroy()
 end)
 
--- ===== INIT =====
+-- ============================================================
+-- INIT
+-- ============================================================
 refreshStatus()
-
-task.spawn(function()
-	while screenGui.Parent do
-		refreshStatus()
-		task.wait(2)
-	end
-end)
+pushLog("siap. auto-send: Briar≥1 / Spire≥5")
