@@ -1,88 +1,87 @@
 -- ============================================================
--- Auto Brew Simple (Minimalis)
+-- Auto Brew — Cek Malam Sekali, lalu Loop
 -- Alur:
---   1. Tunggu malam (ClockTime >= 12 atau < 6)
---   2. Fire Briar Rose
---   3. Fire Spirethorn
---   4. Tunggu 13 menit
---   5. Fire Claim Reward
---   6. Loop
+--   1. Tunggu malam SEKALI (ClockTime >= 18 atau < 6)
+--   2. Loop terus:
+--        a. Fire Briar
+--        b. Fire Spirethorn
+--        c. Tunggu 12 menit
+--        d. Fire Claim
+--        e. Tunggu 5 detik
+--        f. Ulang
 -- ============================================================
-local Players = game:GetService("Players")
+local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
-local Lighting = game:GetService("Lighting")
+local TweenService      = game:GetService("TweenService")
+local UserInputService  = game:GetService("UserInputService")
+local Lighting          = game:GetService("Lighting")
 
 local player = Players.LocalPlayer
 
-local remote = ReplicatedStorage:WaitForChild("SharedModules")
-	:WaitForChild("Packet"):WaitForChild("RemoteEvent")
+local remote = ReplicatedStorage
+    :WaitForChild("SharedModules")
+    :WaitForChild("Packet")
+    :WaitForChild("RemoteEvent")
 
 -- ============================================================
 -- CONFIG
 -- ============================================================
 local CONFIG = {
-	BREW_WAIT     = 13 * 60,
-	CLAIM_WAIT    = 2,
-	NIGHT_POLL    = 0.5,    -- cek malam tiap 0.5s (realtime)
+    BREW_WAIT      = 11 * 60,   -- 720s
+    CLAIM_WAIT     = 5,
+    POST_FIRE_WAIT = 1.5,       -- jeda Briar → Spirethorn
+    NIGHT_POLL     = 0.5,       -- interval cek malam (sekali saja)
 }
 
--- ============================================================
--- PAYLOAD
--- ============================================================
-local function fireBriar()
-	return pcall(function()
-		local args = { buffer.fromstring("\195\0009\nBriar Rose") }
-		remote:FireServer(unpack(args))
-	end)
-end
-
-local function fireSpirethorn()
-	return pcall(function()
-		local args = { buffer.fromstring("\195\000^\016Common Seed Pack") }
-		remote:FireServer(unpack(args))
-	end)
-end
-
-local function fireClaim()
-	return pcall(function()
-		local args = { buffer.fromstring("\196\000O") }
-		remote:FireServer(unpack(args))
-	end)
-end
+-- Payload (cache sekali)
+local BRIAR      = buffer.fromstring("\195\0009\nBriar Rose")
+local SPIRETHORN = buffer.fromstring("\195\000^\016Common Seed Pack")
+local CLAIM      = buffer.fromstring("\196\000O")
 
 -- ============================================================
 -- STATE
 -- ============================================================
 local isRunning = false
-local runToken = 0
+local runToken  = 0
 
 -- ============================================================
--- HELPER
+-- HELPERS
 -- ============================================================
 local function isNight()
-	local ct = Lighting.ClockTime or 0
-	local h = math.floor(ct) % 24
-	return h >= 12 or h < 6
+    local ct = tonumber(Lighting.ClockTime) or 0
+    local h = ((math.floor(ct) % 24) + 24) % 24
+    return h >= 18 or h < 6
+end
+
+local function preciseWait(seconds, isCancelled)
+    local deadline = os.clock() + seconds
+    while true do
+        if isCancelled and isCancelled() then return false end
+        local remaining = deadline - os.clock()
+        if remaining <= 0 then return true end
+        task.wait(math.min(remaining, 0.25))
+    end
 end
 
 -- ============================================================
--- GUI MINIMALIS
+-- GUI
 -- ============================================================
 local COLORS = {
-	bg        = Color3.fromRGB(22, 22, 28),
-	header    = Color3.fromRGB(16, 16, 20),
-	text      = Color3.fromRGB(235, 235, 240),
-	green     = Color3.fromRGB(80, 200, 120),
-	greenHv   = Color3.fromRGB(100, 220, 140),
-	red       = Color3.fromRGB(200, 70, 70),
-	accentOff = Color3.fromRGB(60, 60, 72),
-	stroke    = Color3.fromRGB(60, 60, 72),
+    bg        = Color3.fromRGB(22, 22, 28),
+    header    = Color3.fromRGB(16, 16, 20),
+    text      = Color3.fromRGB(235, 235, 240),
+    green     = Color3.fromRGB(80, 200, 120),
+    greenHv   = Color3.fromRGB(100, 220, 140),
+    red       = Color3.fromRGB(200, 70, 70),
+    yellow    = Color3.fromRGB(220, 180, 80),
+    accentOff = Color3.fromRGB(60, 60, 72),
+    stroke    = Color3.fromRGB(60, 60, 72),
 }
 
 local function corner(p, r)
-	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = p
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, r or 8)
+    c.Parent = p
 end
 
 local screenGui = Instance.new("ScreenGui")
@@ -91,7 +90,7 @@ screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
-local FRAME_WIDTH = 170
+local FRAME_WIDTH  = 170
 local FRAME_HEIGHT = 76
 
 local frame = Instance.new("Frame")
@@ -111,28 +110,28 @@ stroke.Parent = frame
 -- Drag
 local dragging, dragStart, startPos
 frame.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1
-		or input.UserInputType == Enum.UserInputType.Touch then
-		dragging = true
-		dragStart = input.Position
-		startPos = frame.Position
-	end
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging  = true
+        dragStart = input.Position
+        startPos  = frame.Position
+    end
 end)
 frame.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1
-		or input.UserInputType == Enum.UserInputType.Touch then
-		dragging = false
-	end
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
 end)
 UserInputService.InputChanged:Connect(function(input)
-	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
-		or input.UserInputType == Enum.UserInputType.Touch) then
-		local delta = input.Position - dragStart
-		frame.Position = UDim2.new(
-			startPos.X.Scale, startPos.X.Offset + delta.X,
-			startPos.Y.Scale, startPos.Y.Offset + delta.Y
-		)
-	end
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        frame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
 end)
 
 -- Header
@@ -162,19 +161,19 @@ title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = header
 
 local function makeHeaderBtn(xOffset, bg, txt)
-	local b = Instance.new("TextButton")
-	b.Size = UDim2.new(0, 18, 0, 18)
-	b.Position = UDim2.new(1, xOffset, 0, 3)
-	b.BackgroundColor3 = bg
-	b.Text = txt
-	b.TextColor3 = Color3.fromRGB(255, 255, 255)
-	b.Font = Enum.Font.GothamBold
-	b.TextSize = 12
-	b.BorderSizePixel = 0
-	b.AutoButtonColor = false
-	b.Parent = header
-	corner(b, 5)
-	return b
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0, 18, 0, 18)
+    b.Position = UDim2.new(1, xOffset, 0, 3)
+    b.BackgroundColor3 = bg
+    b.Text = txt
+    b.TextColor3 = Color3.fromRGB(255, 255, 255)
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 12
+    b.BorderSizePixel = 0
+    b.AutoButtonColor = false
+    b.Parent = header
+    corner(b, 5)
+    return b
 end
 
 local minimizeBtn = makeHeaderBtn(-42, COLORS.accentOff, "—")
@@ -194,90 +193,95 @@ toggleBtn.AutoButtonColor = false
 toggleBtn.Parent = frame
 corner(toggleBtn, 8)
 
-local function setToggleUI(on)
-	if on then
-		toggleBtn.Text = "■ STOP"
-		toggleBtn.BackgroundColor3 = COLORS.red
-	else
-		toggleBtn.Text = "▶ START"
-		toggleBtn.BackgroundColor3 = COLORS.green
-	end
+local function setToggleUI(state) -- "idle" | "running" | "waiting"
+    if state == "running" then
+        toggleBtn.Text = "■ STOP"
+        toggleBtn.BackgroundColor3 = COLORS.red
+    elseif state == "waiting" then
+        toggleBtn.Text = "… WAIT"
+        toggleBtn.BackgroundColor3 = COLORS.yellow
+    else
+        toggleBtn.Text = "▶ START"
+        toggleBtn.BackgroundColor3 = COLORS.green
+    end
 end
 
 -- ============================================================
 -- MAIN CYCLE
 -- ============================================================
 local function mainCycle()
-	runToken += 1
-	local myToken = runToken
+    runToken += 1
+    local myToken = runToken
 
-	while isRunning and myToken == runToken do
-		-- ===== TUNGGU MALAM =====
-		while isRunning and myToken == runToken and not isNight() do
-			task.wait(CONFIG.NIGHT_POLL)
-		end
+    local function cancelled()
+        return not isRunning or myToken ~= runToken
+    end
 
-		if not (isRunning and myToken == runToken) then break end
+    -- ===== 1. TUNGGU MALAM (SEKALI SAJA) =====
+    setToggleUI("waiting")
+    while not cancelled() and not isNight() do
+        task.wait(CONFIG.NIGHT_POLL)
+    end
+    if cancelled() then return end
 
-		-- ===== FIRE BRIAR =====
-		fireBriar()
-		task.wait(2)
+    setToggleUI("running")
+    print("[AutoBrew] Malam tiba, mulai loop...")
 
-		if not (isRunning and myToken == runToken) then break end
+    -- ===== 2. LOOP TERUS TANPA CEK MALAM LAGI =====
+    while not cancelled() do
+        -- a. Fire Briar
+        remote:FireServer(BRIAR)
+        if not preciseWait(CONFIG.POST_FIRE_WAIT, cancelled) then break end
 
-		-- ===== FIRE SPIRETHORN =====
-		fireSpirethorn()
-		task.wait(2)
+        -- b. Fire Spirethorn
+        remote:FireServer(SPIRETHORN)
+        if not preciseWait(CONFIG.POST_FIRE_WAIT, cancelled) then break end
 
-		if not (isRunning and myToken == runToken) then break end
+        -- c. Tunggu 12 menit
+        if not preciseWait(CONFIG.BREW_WAIT, cancelled) then break end
 
-		-- ===== TUNGGU 13 MENIT =====
-		local t0 = tick()
-		while isRunning and myToken == runToken and (tick() - t0) < CONFIG.BREW_WAIT do
-			task.wait(1)
-		end
+        -- d. Fire Claim
+        remote:FireServer(CLAIM)
+        if not preciseWait(CONFIG.CLAIM_WAIT, cancelled) then break end
 
-		if not (isRunning and myToken == runToken) then break end
-
-		-- ===== CLAIM =====
-		fireClaim()
-		task.wait(CONFIG.CLAIM_WAIT)
-	end
+        -- e. Ulang
+    end
 end
 
 -- ============================================================
 -- START / STOP
 -- ============================================================
 local function startLoop()
-	if isRunning then return end
-	isRunning = true
-	setToggleUI(true)
-	task.spawn(mainCycle)
+    if isRunning then return end
+    isRunning = true
+    setToggleUI("waiting")
+    task.spawn(mainCycle)
 end
 
 local function stopLoop()
-	isRunning = false
-	runToken += 1
-	setToggleUI(false)
+    if not isRunning then return end
+    isRunning = false
+    runToken += 1
+    setToggleUI("idle")
 end
 
 toggleBtn.MouseButton1Click:Connect(function()
-	if isRunning then stopLoop() else startLoop() end
+    if isRunning then stopLoop() else startLoop() end
 end)
 
 toggleBtn.MouseEnter:Connect(function()
-	if not isRunning then
-		TweenService:Create(toggleBtn, TweenInfo.new(0.1), {
-			BackgroundColor3 = COLORS.greenHv
-		}):Play()
-	end
+    if not isRunning then
+        TweenService:Create(toggleBtn, TweenInfo.new(0.1), {
+            BackgroundColor3 = COLORS.greenHv
+        }):Play()
+    end
 end)
 toggleBtn.MouseLeave:Connect(function()
-	if not isRunning then
-		TweenService:Create(toggleBtn, TweenInfo.new(0.1), {
-			BackgroundColor3 = COLORS.green
-		}):Play()
-	end
+    if not isRunning then
+        TweenService:Create(toggleBtn, TweenInfo.new(0.1), {
+            BackgroundColor3 = COLORS.green
+        }):Play()
+    end
 end)
 
 -- ============================================================
@@ -287,27 +291,27 @@ local minimized = false
 local savedSize = FRAME_HEIGHT
 
 minimizeBtn.MouseButton1Click:Connect(function()
-	minimized = not minimized
-	if minimized then
-		savedSize = frame.Size.Y.Offset
-		TweenService:Create(frame, TweenInfo.new(0.2), {
-			Size = UDim2.new(0, FRAME_WIDTH, 0, 24)
-		}):Play()
-		toggleBtn.Visible = false
-	else
-		TweenService:Create(frame, TweenInfo.new(0.2), {
-			Size = UDim2.new(0, FRAME_WIDTH, 0, savedSize)
-		}):Play()
-		toggleBtn.Visible = true
-	end
+    minimized = not minimized
+    if minimized then
+        savedSize = frame.Size.Y.Offset
+        TweenService:Create(frame, TweenInfo.new(0.2), {
+            Size = UDim2.new(0, FRAME_WIDTH, 0, 24)
+        }):Play()
+        toggleBtn.Visible = false
+    else
+        TweenService:Create(frame, TweenInfo.new(0.2), {
+            Size = UDim2.new(0, FRAME_WIDTH, 0, savedSize)
+        }):Play()
+        toggleBtn.Visible = true
+    end
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
-	stopLoop()
-	screenGui:Destroy()
+    stopLoop()
+    screenGui:Destroy()
 end)
 
 -- ============================================================
 -- INIT
 -- ============================================================
-setToggleUI(false)
+setToggleUI("idle")
