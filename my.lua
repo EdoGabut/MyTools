@@ -1,8 +1,9 @@
 -- ============================================================
--- Auto Pumpkin + SeedPack + Clear Map (All-in-One)
--- - Saat di-execute: clear map dulu (auto)
--- - SeedPack prioritas, cek prompt terdekat
--- - Pumpkin fallback
+-- Auto Farm (Monster > Pumpkin) + SeedPack Top Priority
+-- - Execute: clear map otomatis
+-- - Prioritas 1: SeedPack (batalkan farm)
+-- - Prioritas 2: Monster (kalau spawn, batalkan pumpkin)
+-- - Prioritas 3: Pumpkin (fallback)
 -- ============================================================
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -16,17 +17,18 @@ local player = Players.LocalPlayer
 -- CONFIG
 -- ============================================================
 local CONFIG = {
-	-- Folder farm
+	MONSTER_FOLDER = "Workspace.MonsterVisuals",
 	PUMPKIN_FOLDER = "Workspace.Pumpkins",
 	SEEDPACK_PATH  = "Workspace.Map.SeedPackSpawnServerLocations",
 
-	-- Range & speed
-	PUMPKIN_RANGE      = 8,
+	MONSTER_RANGE  = 10,
+	PUMPKIN_RANGE  = 8,
+
 	WALK_SPEED         = 30,
 	ATTACK_COOLDOWN    = 0.12,
 	RETARGET_INTERVAL  = 0.1,
+	SEARCH_INTERVAL    = 0.3,
 
-	-- Seedpack
 	SEEDPACK_STOP_DIST      = 5,
 	SEEDPACK_MOVE_TIMEOUT   = 15,
 	SEEDPACK_MOVE_REFRESH   = 0.15,
@@ -34,7 +36,6 @@ local CONFIG = {
 	SEEDPACK_TRIGGER_COOLDOWN = 0.15,
 	SEEDPACK_TRIGGERED_TTL  = 1.5,
 
-	-- Clear map (jalan otomatis saat execute)
 	CLEAR_MAP = {
 		DELETE_CHILDREN = {
 			"Workspace.Map.Middle",
@@ -129,48 +130,38 @@ local function getPromptPosition(prompt)
 end
 
 -- ============================================================
--- CLEAR MAP (dijalankan otomatis saat execute)
+-- CLEAR MAP
 -- ============================================================
-local function clearMapLog(msg)
+local function cmLog(msg)
 	print(string.format("[ClearMap %s] %s", os.date("%H:%M:%S"), msg))
 end
 
-local function clearMap_deleteChildren(path)
+local function cm_deleteChildren(path)
 	local target = resolvePath(path)
-	if not target then
-		clearMapLog("✗ tidak ditemukan: " .. path)
-		return 0
-	end
+	if not target then cmLog("✗ tidak ditemukan: " .. path); return end
 	local count = 0
 	for _, child in ipairs(target:GetChildren()) do
 		local ok = pcall(function() child:Destroy() end)
 		if ok then count += 1 end
 	end
-	clearMapLog(string.format("✓ %s → hapus %d anak", path, count))
-	return count
+	cmLog(string.format("✓ %s → hapus %d anak", path, count))
 end
 
-local function clearMap_clearAllChildren(path)
+local function cm_clearAllChildren(path)
 	local target = resolvePath(path)
-	if not target then
-		clearMapLog("✗ tidak ditemukan: " .. path)
-		return
-	end
+	if not target then cmLog("✗ tidak ditemukan: " .. path); return end
 	local before = #target:GetChildren()
 	local ok = pcall(function() target:ClearAllChildren() end)
 	if ok then
-		clearMapLog(string.format("✓ %s → ClearAllChildren (%d → 0)", path, before))
+		cmLog(string.format("✓ %s → ClearAllChildren (%d → 0)", path, before))
 	else
-		clearMapLog("✗ gagal: " .. path)
+		cmLog("✗ gagal: " .. path)
 	end
 end
 
-local function clearMap_disableCollider(path)
+local function cm_disableCollider(path)
 	local target = resolvePath(path)
-	if not target then
-		clearMapLog("✗ tidak ditemukan: " .. path)
-		return
-	end
+	if not target then cmLog("✗ tidak ditemukan: " .. path); return end
 	local count = 0
 	local function disablePart(part)
 		if not part:IsA("BasePart") then return end
@@ -180,30 +171,20 @@ local function clearMap_disableCollider(path)
 		count += 1
 	end
 	disablePart(target)
-	for _, d in ipairs(target:GetDescendants()) do
-		disablePart(d)
-	end
-	clearMapLog(string.format("✓ %s → disable collider %d part", path, count))
+	for _, d in ipairs(target:GetDescendants()) do disablePart(d) end
+	cmLog(string.format("✓ %s → disable collider %d part", path, count))
 end
 
 local function runClearMap()
-	clearMapLog("=====================================")
-	clearMapLog("START")
-	clearMapLog("=====================================")
-
-	for _, path in ipairs(CONFIG.CLEAR_MAP.DELETE_CHILDREN) do
-		clearMap_deleteChildren(path)
-	end
-	for _, path in ipairs(CONFIG.CLEAR_MAP.CLEAR_ALL_CHILDREN) do
-		clearMap_clearAllChildren(path)
-	end
-	for _, path in ipairs(CONFIG.CLEAR_MAP.DISABLE_COLLIDER) do
-		clearMap_disableCollider(path)
-	end
-
-	clearMapLog("=====================================")
-	clearMapLog("SELESAI")
-	clearMapLog("=====================================")
+	cmLog("=====================================")
+	cmLog("START")
+	cmLog("=====================================")
+	for _, path in ipairs(CONFIG.CLEAR_MAP.DELETE_CHILDREN) do cm_deleteChildren(path) end
+	for _, path in ipairs(CONFIG.CLEAR_MAP.CLEAR_ALL_CHILDREN) do cm_clearAllChildren(path) end
+	for _, path in ipairs(CONFIG.CLEAR_MAP.DISABLE_COLLIDER) do cm_disableCollider(path) end
+	cmLog("=====================================")
+	cmLog("SELESAI")
+	cmLog("=====================================")
 end
 
 -- ============================================================
@@ -312,9 +293,7 @@ local function moveToSeedPack(hum, root, prompt, stopDistance, isCancelled, getB
 
 		local myPos = root.Position
 		local targetPos = getPromptPosition(currentPrompt)
-		if not targetPos then
-			return "target_gone", currentPrompt
-		end
+		if not targetPos then return "target_gone", currentPrompt end
 
 		local dist = (targetPos - myPos).Magnitude
 		if dist <= stopDistance then
@@ -331,9 +310,7 @@ local function moveToSeedPack(hum, root, prompt, stopDistance, isCancelled, getB
 			if better and better ~= currentPrompt then
 				currentPrompt = better
 				targetPos = getPromptPosition(currentPrompt)
-				if not targetPos then
-					return "target_gone", currentPrompt
-				end
+				if not targetPos then return "target_gone", currentPrompt end
 			end
 		end
 
@@ -379,9 +356,7 @@ local function runSeedPackMode(hum, root, myToken, isRunningFn)
 			while isRunningFn() and myToken == runToken do
 				if not currentTarget or not currentTarget.Parent then
 					local newPrompts = getSeedPackPrompts()
-					if #newPrompts == 0 then
-						return true
-					end
+					if #newPrompts == 0 then return true end
 					local newNearest = findNearestSeedPack(newPrompts, root.Position, triggeredSet)
 					if not newNearest then break end
 					currentTarget = newNearest
@@ -391,10 +366,7 @@ local function runSeedPackMode(hum, root, myToken, isRunningFn)
 					local p = getSeedPackPrompts()
 					local bestP, bestDist = nil, math.huge
 					for _, cand in ipairs(p) do
-						if cand and cand.Parent
-							and cand ~= currentP
-							and not triggeredSet[cand]
-						then
+						if cand and cand.Parent and cand ~= currentP and not triggeredSet[cand] then
 							local pos = getPromptPosition(cand)
 							if pos then
 								local d = (pos - root.Position).Magnitude
@@ -431,9 +403,7 @@ local function runSeedPackMode(hum, root, myToken, isRunningFn)
 				elseif result == "target_gone" then
 					currentTarget = nil
 				elseif result == "timeout" then
-					if currentTarget then
-						triggeredSet[currentTarget] = tick()
-					end
+					if currentTarget then triggeredSet[currentTarget] = tick() end
 					break
 				end
 			end
@@ -443,12 +413,30 @@ local function runSeedPackMode(hum, root, myToken, isRunningFn)
 end
 
 -- ============================================================
--- PUMPKIN
+-- TARGET FINDERS
 -- ============================================================
-local function findNearestPumpkin(pumpkinFolder, myPos)
-	local nearest, nearestDist, nearestRp = nil, math.huge, nil
-	if not pumpkinFolder then return nil, nil end
+local function findNearestMonster(monsterFolder, myPos)
+	local nearest, nearestRp, nearestDist = nil, nil, math.huge
+	if not monsterFolder then return nil, nil end
+	for _, child in ipairs(monsterFolder:GetChildren()) do
+		if child:IsA("Model") then
+			local rp = findRootPart(child)
+			if rp and rp.Parent then
+				local d = (rp.Position - myPos).Magnitude
+				if d < nearestDist then
+					nearestDist = d
+					nearest = child
+					nearestRp = rp
+				end
+			end
+		end
+	end
+	return nearest, nearestRp, nearestDist
+end
 
+local function findNearestPumpkin(pumpkinFolder, myPos)
+	local nearest, nearestRp, nearestDist = nil, nil, math.huge
+	if not pumpkinFolder then return nil, nil end
 	for _, child in ipairs(pumpkinFolder:GetChildren()) do
 		local rp
 		if child:IsA("Model") then
@@ -465,43 +453,72 @@ local function findNearestPumpkin(pumpkinFolder, myPos)
 			end
 		end
 	end
-	return nearest, nearestRp
+	return nearest, nearestRp, nearestDist
 end
 
-local function runPumpkinFarm(hum, root, pumpkinFolder, myToken, isRunningFn)
-	local currentTarget, currentRp = nil, nil
+-- ============================================================
+-- FARM MODE
+-- Prioritas:
+--   1. Seedpack (kalau ada prompt → return, biar main loop ganti ke seedpack mode)
+--   2. Monster (kalau ada monster → fokus monster, walau lagi ke pumpkin)
+--   3. Pumpkin (fallback)
+-- ============================================================
+local function runFarmMode(hum, root, monsterFolder, pumpkinFolder, myToken, isRunningFn)
+	local currentTarget, currentRp, currentKind = nil, nil, nil
 	local lastSearch = 0
 
 	while isRunningFn() and myToken == runToken do
-		-- cancel kalau ada seedpack
+		-- ==== Prioritas 1: cek seedpack ====
 		local prompts = getSeedPackPrompts()
 		if #prompts > 0 then return end
 
 		local myPos = root.Position
 		local now = tick()
 
-		if currentTarget and (not currentTarget.Parent or not currentRp or not currentRp.Parent) then
-			currentTarget, currentRp = nil, nil
-		end
+		-- ==== Prioritas 2: cek monster (selalu, biar langsung switch kalau spawn) ====
+		local monsterTarget, monsterRp = findNearestMonster(monsterFolder, myPos)
 
-		if not currentTarget and (now - lastSearch) >= 0.3 then
-			lastSearch = now
-			local t, rp = findNearestPumpkin(pumpkinFolder, myPos)
-			if t then
-				currentTarget = t
-				currentRp = rp
+		if monsterTarget then
+			-- Kalau ada monster → fokus monster (batalkan pumpkin)
+			if currentKind ~= "monster" or currentTarget ~= monsterTarget then
+				currentTarget = monsterTarget
+				currentRp = monsterRp
+				currentKind = "monster"
+			end
+		else
+			-- ==== Prioritas 3: nggak ada monster → pumpkin ====
+			-- Validasi target pumpkin lama
+			if currentKind == "pumpkin" and currentTarget and (not currentTarget.Parent or not currentRp or not currentRp.Parent) then
+				currentTarget, currentRp, currentKind = nil, nil, nil
+			end
+
+			-- Kalau nggak ada monster & target bukan pumpkin → cari pumpkin baru
+			if currentKind ~= "pumpkin" or not currentTarget then
+				if (now - lastSearch) >= CONFIG.SEARCH_INTERVAL then
+					lastSearch = now
+					local pTarget, pRp = findNearestPumpkin(pumpkinFolder, myPos)
+					if pTarget then
+						currentTarget = pTarget
+						currentRp = pRp
+						currentKind = "pumpkin"
+					else
+						currentTarget, currentRp, currentKind = nil, nil, nil
+					end
+				end
 			end
 		end
 
-		if not currentTarget then
+		-- ==== Eksekusi target ====
+		if not currentTarget or not currentRp or not currentRp.Parent then
 			hum:Move(Vector3.zero, false)
 			task.wait(0.15)
 		else
 			local targetPos = currentRp.Position
 			local flatDir = Vector3.new(targetPos.X - myPos.X, 0, targetPos.Z - myPos.Z)
 			local dist = flatDir.Magnitude
+			local range = (currentKind == "monster") and CONFIG.MONSTER_RANGE or CONFIG.PUMPKIN_RANGE
 
-			if dist <= CONFIG.PUMPKIN_RANGE then
+			if dist <= range then
 				hum:Move(Vector3.zero, false)
 				local lookAt = CFrame.lookAt(myPos, Vector3.new(targetPos.X, myPos.Y, targetPos.Z))
 				root.CFrame = CFrame.new(myPos) * (lookAt - lookAt.Position)
@@ -525,12 +542,14 @@ end
 -- MAIN LOOP
 -- ============================================================
 local function mainLoop()
-	local pumpkinFolder = waitFolder(CONFIG.PUMPKIN_FOLDER)
-	if not pumpkinFolder then
-		warn("[AutoFarm] Folder pumpkin tidak ditemukan")
+	local monsterFolder = waitFolder(CONFIG.MONSTER_FOLDER, 10)
+	local pumpkinFolder = waitFolder(CONFIG.PUMPKIN_FOLDER, 10)
+	waitFolder(CONFIG.SEEDPACK_PATH, 5)
+
+	if not monsterFolder and not pumpkinFolder then
+		warn("[AutoFarm] Monster & Pumpkin folder tidak ditemukan")
 		return
 	end
-	local _ = waitFolder(CONFIG.SEEDPACK_PATH, 5)
 
 	local char = player.Character or player.CharacterAdded:Wait()
 	local hum = char:WaitForChild("Humanoid")
@@ -551,7 +570,7 @@ local function mainLoop()
 		if #prompts > 0 then
 			runSeedPackMode(hum, root, myToken, isRunningFn)
 		else
-			runPumpkinFarm(hum, root, pumpkinFolder, myToken, isRunningFn)
+			runFarmMode(hum, root, monsterFolder, pumpkinFolder, myToken, isRunningFn)
 		end
 	end
 
@@ -562,18 +581,16 @@ local function mainLoop()
 end
 
 -- ============================================================
--- GUI
+-- GUI MINIMALIS (TOGGLE + MINIMIZE + CLOSE)
 -- ============================================================
 local COLORS = {
 	bg        = Color3.fromRGB(22, 22, 28),
 	header    = Color3.fromRGB(16, 16, 20),
-	card      = Color3.fromRGB(32, 32, 40),
 	text      = Color3.fromRGB(235, 235, 240),
-	textDim   = Color3.fromRGB(140, 140, 155),
 	green     = Color3.fromRGB(80, 200, 120),
-	accentOff = Color3.fromRGB(60, 60, 72),
+	greenHv   = Color3.fromRGB(100, 220, 140),
 	red       = Color3.fromRGB(200, 70, 70),
-	logBg     = Color3.fromRGB(14, 14, 18),
+	accentOff = Color3.fromRGB(60, 60, 72),
 	stroke    = Color3.fromRGB(60, 60, 72),
 }
 
@@ -582,13 +599,13 @@ local function corner(p, r)
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoPumpkinSeedpack"
+screenGui.Name = "AutoFarmMini"
 screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
-local FRAME_WIDTH = 230
-local FRAME_HEIGHT = 210
+local FRAME_WIDTH = 170
+local FRAME_HEIGHT = 76
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
@@ -597,7 +614,7 @@ frame.BackgroundColor3 = COLORS.bg
 frame.BorderSizePixel = 0
 frame.Active = true
 frame.Parent = screenGui
-corner(frame, 12)
+corner(frame, 10)
 
 local stroke = Instance.new("UIStroke")
 stroke.Color = COLORS.stroke
@@ -631,125 +648,64 @@ UserInputService.InputChanged:Connect(function(input)
 	end
 end)
 
--- Title bar
-local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 32)
-titleBar.BackgroundColor3 = COLORS.header
-titleBar.BorderSizePixel = 0
-titleBar.Parent = frame
-corner(titleBar, 12)
+-- Header bar (drag handle)
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 24)
+header.BackgroundColor3 = COLORS.header
+header.BorderSizePixel = 0
+header.Parent = frame
+corner(header, 10)
 
-local fix = Instance.new("Frame")
-fix.Size = UDim2.new(1, 0, 0, 10)
-fix.Position = UDim2.new(0, 0, 1, -10)
-fix.BackgroundColor3 = COLORS.header
-fix.BorderSizePixel = 0
-fix.Parent = titleBar
+local headerFix = Instance.new("Frame")
+headerFix.Size = UDim2.new(1, 0, 0, 8)
+headerFix.Position = UDim2.new(0, 0, 1, -8)
+headerFix.BackgroundColor3 = COLORS.header
+headerFix.BorderSizePixel = 0
+headerFix.Parent = header
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -80, 1, 0)
-title.Position = UDim2.new(0, 12, 0, 0)
+title.Size = UDim2.new(1, -60, 1, 0)
+title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "🎃 + 📦 + 🗑️"
+title.Text = "Auto Farm"
 title.TextColor3 = COLORS.text
 title.Font = Enum.Font.GothamBold
-title.TextSize = 12
+title.TextSize = 11
 title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = titleBar
+title.Parent = header
 
-local function makeTitleBtn(xOffset, bg, txt)
+local function makeHeaderBtn(xOffset, bg, txt)
 	local b = Instance.new("TextButton")
-	b.Size = UDim2.new(0, 22, 0, 22)
-	b.Position = UDim2.new(1, xOffset, 0, 5)
+	b.Size = UDim2.new(0, 18, 0, 18)
+	b.Position = UDim2.new(1, xOffset, 0, 3)
 	b.BackgroundColor3 = bg
 	b.Text = txt
 	b.TextColor3 = Color3.fromRGB(255, 255, 255)
 	b.Font = Enum.Font.GothamBold
-	b.TextSize = 14
+	b.TextSize = 12
 	b.BorderSizePixel = 0
 	b.AutoButtonColor = false
-	b.Parent = titleBar
-	corner(b, 6)
+	b.Parent = header
+	corner(b, 5)
 	return b
 end
 
-local minimizeBtn = makeTitleBtn(-54, COLORS.accentOff, "—")
-local closeBtn    = makeTitleBtn(-28, COLORS.red, "×")
+local minimizeBtn = makeHeaderBtn(-42, COLORS.accentOff, "—")
+local closeBtn    = makeHeaderBtn(-21, COLORS.red, "×")
 
--- Body
-local body = Instance.new("Frame")
-body.Size = UDim2.new(1, -16, 1, -40)
-body.Position = UDim2.new(0, 8, 0, 36)
-body.BackgroundTransparency = 1
-body.Parent = frame
-
-local statusCard = Instance.new("Frame")
-statusCard.Size = UDim2.new(1, 0, 0, 50)
-statusCard.Position = UDim2.new(0, 0, 0, 0)
-statusCard.BackgroundColor3 = COLORS.card
-statusCard.BorderSizePixel = 0
-statusCard.Parent = body
-corner(statusCard, 8)
-
-local statusLbl = Instance.new("TextLabel")
-statusLbl.Size = UDim2.new(1, -16, 0, 20)
-statusLbl.Position = UDim2.new(0, 8, 0, 4)
-statusLbl.BackgroundTransparency = 1
-statusLbl.Text = "map cleared ✓"
-statusLbl.TextColor3 = COLORS.green
-statusLbl.Font = Enum.Font.GothamBold
-statusLbl.TextSize = 13
-statusLbl.TextXAlignment = Enum.TextXAlignment.Left
-statusLbl.Parent = statusCard
-
-local subLbl = Instance.new("TextLabel")
-subLbl.Size = UDim2.new(1, -16, 0, 16)
-subLbl.Position = UDim2.new(0, 8, 0, 26)
-subLbl.BackgroundTransparency = 1
-subLbl.Text = "tap start untuk mulai"
-subLbl.TextColor3 = COLORS.textDim
-subLbl.Font = Enum.Font.Gotham
-subLbl.TextSize = 10
-subLbl.TextXAlignment = Enum.TextXAlignment.Left
-subLbl.Parent = statusCard
-
--- Info row
-local infoLbl = Instance.new("TextLabel")
-infoLbl.Size = UDim2.new(1, 0, 0, 50)
-infoLbl.Position = UDim2.new(0, 0, 0, 56)
-infoLbl.BackgroundColor3 = COLORS.logBg
-infoLbl.BorderSizePixel = 0
-infoLbl.Text = "🎃 pumpkin: -\n📦 seedpack: -\n🗑️  cleared"
-infoLbl.TextColor3 = COLORS.textDim
-infoLbl.Font = Enum.Font.Code
-infoLbl.TextSize = 10
-infoLbl.TextXAlignment = Enum.TextXAlignment.Left
-infoLbl.TextYAlignment = Enum.TextYAlignment.Top
-infoLbl.Parent = body
-corner(infoLbl, 6)
-local iPad = Instance.new("UIPadding", infoLbl)
-iPad.PaddingLeft = UDim.new(0, 8)
-iPad.PaddingRight = UDim.new(0, 8)
-iPad.PaddingTop = UDim.new(0, 4)
-
+-- Toggle button (besar)
 local toggleBtn = Instance.new("TextButton")
-toggleBtn.Size = UDim2.new(1, 0, 0, 40)
-toggleBtn.Position = UDim2.new(0, 0, 1, -40)
+toggleBtn.Size = UDim2.new(1, -16, 0, 36)
+toggleBtn.Position = UDim2.new(0, 8, 0, 32)
 toggleBtn.BackgroundColor3 = COLORS.green
 toggleBtn.Text = "▶ START"
 toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 toggleBtn.Font = Enum.Font.GothamBold
-toggleBtn.TextSize = 14
+toggleBtn.TextSize = 13
 toggleBtn.BorderSizePixel = 0
 toggleBtn.AutoButtonColor = false
-toggleBtn.Parent = body
+toggleBtn.Parent = frame
 corner(toggleBtn, 8)
-
-local function setStatus(main, sub, color)
-	statusLbl.Text = main
-	statusLbl.TextColor3 = color or COLORS.text
-	subLbl.Text = sub or ""
-end
 
 local function setToggleUI(on)
 	if on then
@@ -761,22 +717,6 @@ local function setToggleUI(on)
 	end
 end
 
--- Info updater
-task.spawn(function()
-	while screenGui.Parent do
-		if isRunning then
-			local prompts = getSeedPackPrompts()
-			local pumpkinFolder = resolvePath(CONFIG.PUMPKIN_FOLDER)
-			local pumpkinCount = 0
-			if pumpkinFolder then
-				pumpkinCount = #pumpkinFolder:GetChildren()
-			end
-			infoLbl.Text = string.format("🎃 pumpkin: %d\n📦 seedpack: %d prompt\n🗑️  cleared ✓", pumpkinCount, #prompts)
-		end
-		task.wait(1)
-	end
-end)
-
 -- ============================================================
 -- START / STOP
 -- ============================================================
@@ -784,7 +724,6 @@ local function startLoop()
 	if isRunning then return end
 	isRunning = true
 	setToggleUI(true)
-	setStatus("▶ mulai", "cari seedpack / pumpkin...", COLORS.green)
 	task.spawn(mainLoop)
 end
 
@@ -792,7 +731,6 @@ local function stopLoop()
 	isRunning = false
 	runToken += 1
 	setToggleUI(false)
-	setStatus("idle", "tap start untuk mulai", COLORS.textDim)
 	releaseE()
 
 	local hum = activeHumanoid
@@ -813,7 +751,7 @@ end)
 toggleBtn.MouseEnter:Connect(function()
 	if not isRunning then
 		TweenService:Create(toggleBtn, TweenInfo.new(0.1), {
-			BackgroundColor3 = Color3.fromRGB(100, 220, 140)
+			BackgroundColor3 = COLORS.greenHv
 		}):Play()
 	end
 end)
@@ -836,14 +774,14 @@ minimizeBtn.MouseButton1Click:Connect(function()
 	if minimized then
 		savedSize = frame.Size.Y.Offset
 		TweenService:Create(frame, TweenInfo.new(0.2), {
-			Size = UDim2.new(0, FRAME_WIDTH, 0, 32)
+			Size = UDim2.new(0, FRAME_WIDTH, 0, 24)
 		}):Play()
-		body.Visible = false
+		toggleBtn.Visible = false
 	else
 		TweenService:Create(frame, TweenInfo.new(0.2), {
 			Size = UDim2.new(0, FRAME_WIDTH, 0, savedSize)
 		}):Play()
-		body.Visible = true
+		toggleBtn.Visible = true
 	end
 end)
 
@@ -857,8 +795,7 @@ player.CharacterAdded:Connect(function()
 end)
 
 -- ============================================================
--- EXECUTE: CLEAR MAP OTOMATIS + INIT GUI
+-- EXECUTE
 -- ============================================================
-runClearMap()          -- ← jalan otomatis saat script di-execute
+runClearMap()
 setToggleUI(false)
-setStatus("map cleared ✓", "tap start untuk mulai", COLORS.green)
