@@ -2,7 +2,8 @@
     MERGED SCRIPT — Anti-Ragdoll + Anti-Stun + Anti-Seat
     - Anti-Ragdoll + Anti-Stun (langsung aktif, persist respawn)
     - Anti-Seat (deteksi Sit → fire remote stand-up)
-    - WalkSpeed lock 30 (anti-override server)
+    - Anti-Knockdown (deteksi tidur di tanah → fire remote)
+    - NO WalkSpeed lock, NO JumpPower fix, NO Health lock
     - NO Noclip, NO Prompt auto
 --]]
 
@@ -19,21 +20,13 @@ local LocalPlayer = Players.LocalPlayer
 local ENABLE_ANTI_RAGDOLL    = true
 local ENABLE_ANTI_STUN       = true
 local ENABLE_FREEZE          = true
-local ENABLE_HEALTH_LOCK     = true
-local ENABLE_WALKSPEED_FIX   = true
-local ENABLE_JUMPPOWER_FIX   = true
 local ENABLE_ANTI_SEAT       = true
-local ENABLE_ANTI_KNOCKDOWN  = true   -- tambahan: deteksi tidur di tanah
-
-local WALKSPEED_LOCK_VALUE = 30       -- set bukan tambah
-local JUMPPOWER_DEFAULT    = 50
-local ANTI_SEAT_COOLDOWN   = 0.4      -- jeda fire remote
-local LOG_ENABLED          = true
+local ENABLE_ANTI_KNOCKDOWN  = true
+local ANTI_SEAT_COOLDOWN     = 0.4
+local LOG_ENABLED            = true
 
 -- ====== STATE ======
 local Frozen = false
-local DEFAULT_WALKSPEED = 16
-local DEFAULT_JUMPPOWER = 50
 
 -- Anti-Seat state
 local SEAT_REMOTE_ARGS = {
@@ -58,7 +51,6 @@ local function ForceNormal(character)
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if not hum or not hrp then return end
 
-    hum.Health = hum.MaxHealth
     pcall(function()
         hum:ChangeState(Enum.HumanoidStateType.RunningNoPhysics)
     end)
@@ -114,35 +106,15 @@ local function AntiStun(character)
 
         RestoreMotors(character)
 
-        if ENABLE_WALKSPEED_FIX and (hum.WalkSpeed <= 0.1 or hum.WalkSpeed > 500) then
-            pcall(function() hum.WalkSpeed = WALKSPEED_LOCK_VALUE end)
-        end
-
-        if ENABLE_JUMPPOWER_FIX and (hum.JumpPower <= 0.1 or hum.JumpPower > 500) then
-            pcall(function() hum.JumpPower = JUMPPOWER_DEFAULT end)
-        end
-
         if hrp.Anchored and not Frozen then
             pcall(function() hrp.Anchored = false end)
         end
-    end
-
-    if ENABLE_WALKSPEED_FIX and hum.WalkSpeed <= 0.1 then
-        pcall(function() hum.WalkSpeed = WALKSPEED_LOCK_VALUE end)
-    end
-    if ENABLE_JUMPPOWER_FIX and hum.JumpPower <= 0.1 then
-        pcall(function() hum.JumpPower = JUMPPOWER_DEFAULT end)
     end
 end
 
 local function InitAntiRagdoll(character)
     local hum = character:WaitForChild("Humanoid", 10)
     if not hum then return end
-
-    if hum.WalkSpeed > 0 and hum.WalkSpeed ~= WALKSPEED_LOCK_VALUE then
-        DEFAULT_WALKSPEED = hum.WalkSpeed
-    end
-    if hum.JumpPower > 0 then DEFAULT_JUMPPOWER = hum.JumpPower end
 
     for state in pairs(BlockedStates) do
         pcall(function() hum:SetStateEnabled(state, false) end)
@@ -171,10 +143,6 @@ local function InitAntiRagdoll(character)
 
         if ENABLE_ANTI_STUN then
             AntiStun(character)
-        end
-
-        if ENABLE_HEALTH_LOCK then
-            hum.Health = hum.MaxHealth
         end
     end)
 end
@@ -327,25 +295,6 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 
 -- ============================================================
--- ====== WALKSPEED LOCK ======
--- ============================================================
--- enforce tiap frame (biar server ga bisa balikin)
-local lastSpeedCheck = 0
-RunService.Heartbeat:Connect(function()
-    local now = tick()
-    if now - lastSpeedCheck >= 0.3 then
-        lastSpeedCheck = now
-        local char = LocalPlayer.Character
-        if not char then return end
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if not hum then return end
-        if hum.WalkSpeed ~= WALKSPEED_LOCK_VALUE then
-            pcall(function() hum.WalkSpeed = WALKSPEED_LOCK_VALUE end)
-        end
-    end
-end)
-
--- ============================================================
 -- ====== GUI MINI STATUS ======
 -- ============================================================
 local COLORS = {
@@ -374,7 +323,7 @@ screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(220, 100)
+frame.Size = UDim2.fromOffset(220, 90)
 frame.Position = UDim2.fromOffset(30, 320)
 frame.BackgroundColor3 = COLORS.bg
 frame.BorderSizePixel = 0
@@ -454,7 +403,7 @@ local infoLbl = Instance.new("TextLabel")
 infoLbl.Size = UDim2.new(1, -16, 0, 14)
 infoLbl.Position = UDim2.fromOffset(8, 56)
 infoLbl.BackgroundTransparency = 1
-infoLbl.Text = "Seat fires: 0 | WS: 30"
+infoLbl.Text = "Seat fires: 0"
 infoLbl.TextColor3 = COLORS.dim
 infoLbl.Font = Enum.Font.Code
 infoLbl.TextSize = 9
@@ -463,9 +412,9 @@ infoLbl.Parent = frame
 
 local ragdollLbl = Instance.new("TextLabel")
 ragdollLbl.Size = UDim2.new(1, -16, 0, 14)
-ragdollLbl.Position = UDim2.fromOffset(8, 72)
+ragdollLbl.Position = UDim2.fromOffset(8, 70)
 ragdollLbl.BackgroundTransparency = 1
-ragdollLbl.Text = "Anti-Ragdoll: ON | Anti-Stun: ON"
+ragdollLbl.Text = "Anti-Ragdoll: ON | Anti-Stun: ON | Anti-Seat: ON"
 ragdollLbl.TextColor3 = COLORS.blue
 ragdollLbl.Font = Enum.Font.Code
 ragdollLbl.TextSize = 9
@@ -481,13 +430,12 @@ task.spawn(function()
             local stateName = tostring(hum:GetState()):gsub("Enum.HumanoidStateType%.", "")
             stateLbl.Text = string.format("State: %s | Sit: %s | PS: %s",
                 stateName, tostring(hum.Sit), tostring(hum.PlatformStand))
-            infoLbl.Text = string.format("Seat fires: %d | WS: %d",
-                seatFireCount, hum.WalkSpeed)
+            infoLbl.Text = string.format("Seat fires: %d", seatFireCount)
         end
         task.wait(0.3)
     end
 end)
 
-print("✅ MERGED SCRIPT LOADED! (Anti-Ragdoll + Anti-Stun + Anti-Seat + WS Lock 30)")
-print(string.format("   WalkSpeed lock: %d | Anti-Seat: %s | Anti-Knockdown: %s",
-    WALKSPEED_LOCK_VALUE, tostring(ENABLE_ANTI_SEAT), tostring(ENABLE_ANTI_KNOCKDOWN)))
+print("✅ MERGED SCRIPT LOADED! (Anti-Ragdoll + Anti-Stun + Anti-Seat)")
+print(string.format("   Anti-Seat: %s | Anti-Knockdown: %s",
+    tostring(ENABLE_ANTI_SEAT), tostring(ENABLE_ANTI_KNOCKDOWN)))
