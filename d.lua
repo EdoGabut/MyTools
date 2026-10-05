@@ -1,6 +1,8 @@
 -- ============================================================
 -- Auto Farm (Monster > Pumpkin) + SeedPack Top Priority
 -- + Clear Map (versi baru: include WildPetSpawns)
+-- + Force WalkSpeed 30 (set, bukan tambah)
+-- + Button Move to WitchCauldron (MoveTo, bukan teleport)
 -- ============================================================
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -32,6 +34,10 @@ local CONFIG = {
 	SEEDPACK_IDLE_DELAY     = 0.5,
 	SEEDPACK_TRIGGER_COOLDOWN = 0.15,
 	SEEDPACK_TRIGGERED_TTL  = 1.5,
+	SEEDPACK_BETTER_MARGIN  = 10,   -- minimal 10 stud lebih dekat biar ganti target
+
+	WITCH_CAULDRON_PATH     = "Workspace.WitchCauldron",
+	WITCH_CAULDRON_STOP_DIST = 6,
 
 	CLEAR_MAP = {
 		DELETE_CHILDREN = {
@@ -58,6 +64,8 @@ local isRunning = false
 local runToken = 0
 local activeHumanoid = nil
 local lastClickTime = 0
+local speedLoopToken = 0
+local moveToCancelToken = 0
 
 -- ============================================================
 -- HELPERS
@@ -125,6 +133,35 @@ local function getPromptPosition(prompt)
 		end
 	end
 	return nil
+end
+
+-- ============================================================
+-- FORCE WALKSPEED 30
+-- Set (bukan tambah). Override kalau server set ulang.
+-- ============================================================
+local function startSpeedKeeper()
+	speedLoopToken += 1
+	local myToken = speedLoopToken
+	task.spawn(function()
+		while myToken == speedLoopToken do
+			local char = player.Character
+			if char then
+				local hum = char:FindFirstChildOfClass("Humanoid")
+				if hum then
+					if hum.WalkSpeed ~= CONFIG.WALK_SPEED then
+						pcall(function()
+							hum.WalkSpeed = CONFIG.WALK_SPEED
+						end)
+					end
+				end
+			end
+			task.wait(0.1)
+		end
+	end)
+end
+
+local function stopSpeedKeeper()
+	speedLoopToken += 1
 end
 
 -- ============================================================
@@ -303,6 +340,7 @@ local function moveToSeedPack(hum, root, prompt, stopDistance, isCancelled, getB
 			return "timeout", currentPrompt
 		end
 
+		-- Cek apakah ada seedpack lain yang lebih dekat
 		if getBetterTarget then
 			local better = getBetterTarget(currentPrompt, dist)
 			if better and better ~= currentPrompt then
@@ -360,11 +398,18 @@ local function runSeedPackMode(hum, root, myToken, isRunningFn)
 					currentTarget = newNearest
 				end
 
+				-- Logika: kalau ada seedpack lain yang lebih dekat dari sisa jarak
+				-- ke target sekarang, ganti. Guard: jangan ganti kalau sudah dekat.
 				local function getBetterTarget(currentP, currentDist)
+					if currentDist <= CONFIG.SEEDPACK_STOP_DIST + 2 then
+						return nil
+					end
 					local p = getSeedPackPrompts()
 					local bestP, bestDist = nil, math.huge
 					for _, cand in ipairs(p) do
-						if cand and cand.Parent and cand ~= currentP and not triggeredSet[cand] then
+						if cand and cand.Parent
+							and cand ~= currentP
+							and not triggeredSet[cand] then
 							local pos = getPromptPosition(cand)
 							if pos then
 								local d = (pos - root.Position).Magnitude
@@ -375,7 +420,8 @@ local function runSeedPackMode(hum, root, myToken, isRunningFn)
 							end
 						end
 					end
-					if bestP and bestDist < (currentDist - 1) then
+					-- Butuh selisih minimal biar tidak goyang
+					if bestP and bestDist < (currentDist - CONFIG.SEEDPACK_BETTER_MARGIN) then
 						return bestP
 					end
 					return nil
@@ -466,14 +512,12 @@ local function runFarmMode(hum, root, monsterFolder, pumpkinFolder, myToken, isR
 	local lastSearch = 0
 
 	while isRunningFn() and myToken == runToken do
-		-- P1: seedpack
 		local prompts = getSeedPackPrompts()
 		if #prompts > 0 then return end
 
 		local myPos = root.Position
 		local now = tick()
 
-		-- P2: monster
 		local monsterTarget, monsterRp = findNearestMonster(monsterFolder, myPos)
 
 		if monsterTarget then
@@ -483,7 +527,6 @@ local function runFarmMode(hum, root, monsterFolder, pumpkinFolder, myToken, isR
 				currentKind = "monster"
 			end
 		else
-			-- P3: pumpkin
 			if currentKind == "pumpkin" and currentTarget and (not currentTarget.Parent or not currentRp or not currentRp.Parent) then
 				currentTarget, currentRp, currentKind = nil, nil, nil
 			end
@@ -503,7 +546,6 @@ local function runFarmMode(hum, root, monsterFolder, pumpkinFolder, myToken, isR
 			end
 		end
 
-		-- Eksekusi target
 		if not currentTarget or not currentRp or not currentRp.Parent then
 			hum:Move(Vector3.zero, false)
 			task.wait(0.15)
@@ -531,6 +573,66 @@ local function runFarmMode(hum, root, monsterFolder, pumpkinFolder, myToken, isR
 			end
 		end
 	end
+end
+
+-- ============================================================
+-- MOVE TO WITCHCAULDRON (MoveTo, bukan teleport)
+-- ============================================================
+local function moveToWitchCauldron()
+	moveToCancelToken += 1
+	local myToken = moveToCancelToken
+
+	-- Matikan auto farm dulu biar tidak rebutan
+	if isRunning then
+		isRunning = false
+		runToken += 1
+		releaseE()
+	end
+
+	task.spawn(function()
+		local cauldron = resolvePath(CONFIG.WITCH_CAULDRON_PATH)
+		if not cauldron then
+			warn("[MoveTo] WitchCauldron tidak ditemukan")
+			return
+		end
+
+		local targetPart = findRootPart(cauldron) or (cauldron:IsA("BasePart") and cauldron) or nil
+		if not targetPart then
+			warn("[MoveTo] WitchCauldron tidak punya BasePart")
+			return
+		end
+
+		local char = player.Character or player.CharacterAdded:Wait()
+		local hum = char:WaitForChild("Humanoid")
+		local root = char:WaitForChild("HumanoidRootPart")
+
+		local t0 = tick()
+		local timeout = 30
+
+		while myToken == moveToCancelToken do
+			if not root.Parent or not hum.Parent then return end
+			if hum.Health <= 0 then return end
+
+			local myPos = root.Position
+			local tPos = targetPart.Position
+			local dist = (Vector3.new(tPos.X, myPos.Y, tPos.Z) - myPos).Magnitude
+
+			if dist <= CONFIG.WITCH_CAULDRON_STOP_DIST then
+				pcall(function() hum:MoveTo(root.Position) end)
+				print("[MoveTo] Sampai di WitchCauldron")
+				return
+			end
+
+			if tick() - t0 > timeout then
+				pcall(function() hum:MoveTo(root.Position) end)
+				warn("[MoveTo] Timeout menuju WitchCauldron")
+				return
+			end
+
+			hum:MoveTo(Vector3.new(tPos.X, myPos.Y, tPos.Z))
+			task.wait(0.15)
+		end
+	end)
 end
 
 -- ============================================================
@@ -585,6 +687,8 @@ local COLORS = {
 	green     = Color3.fromRGB(80, 200, 120),
 	greenHv   = Color3.fromRGB(100, 220, 140),
 	red       = Color3.fromRGB(200, 70, 70),
+	blue      = Color3.fromRGB(70, 130, 200),
+	blueHv    = Color3.fromRGB(90, 150, 220),
 	accentOff = Color3.fromRGB(60, 60, 72),
 	stroke    = Color3.fromRGB(60, 60, 72),
 }
@@ -600,7 +704,7 @@ screenGui.IgnoreGuiInset = true
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
 local FRAME_WIDTH = 170
-local FRAME_HEIGHT = 76
+local FRAME_HEIGHT = 118  -- dinaikkan karena ada button tambahan
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
@@ -687,7 +791,7 @@ local minimizeBtn = makeHeaderBtn(-42, COLORS.accentOff, "—")
 local closeBtn    = makeHeaderBtn(-21, COLORS.red, "×")
 
 local toggleBtn = Instance.new("TextButton")
-toggleBtn.Size = UDim2.new(1, -16, 0, 36)
+toggleBtn.Size = UDim2.new(1, -16, 0, 32)
 toggleBtn.Position = UDim2.new(0, 8, 0, 32)
 toggleBtn.BackgroundColor3 = COLORS.green
 toggleBtn.Text = "▶ START"
@@ -698,6 +802,19 @@ toggleBtn.BorderSizePixel = 0
 toggleBtn.AutoButtonColor = false
 toggleBtn.Parent = frame
 corner(toggleBtn, 8)
+
+local witchBtn = Instance.new("TextButton")
+witchBtn.Size = UDim2.new(1, -16, 0, 28)
+witchBtn.Position = UDim2.new(0, 8, 0, 70)
+witchBtn.BackgroundColor3 = COLORS.blue
+witchBtn.Text = "⚗ Move to WitchCauldron"
+witchBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+witchBtn.Font = Enum.Font.GothamBold
+witchBtn.TextSize = 11
+witchBtn.BorderSizePixel = 0
+witchBtn.AutoButtonColor = false
+witchBtn.Parent = frame
+corner(witchBtn, 8)
 
 local function setToggleUI(on)
 	if on then
@@ -715,7 +832,9 @@ end
 local function startLoop()
 	if isRunning then return end
 	isRunning = true
+	moveToCancelToken += 1  -- batalkan moveTo kalau ada
 	setToggleUI(true)
+	startSpeedKeeper()
 	task.spawn(mainLoop)
 end
 
@@ -755,6 +874,21 @@ toggleBtn.MouseLeave:Connect(function()
 	end
 end)
 
+witchBtn.MouseButton1Click:Connect(function()
+	moveToWitchCauldron()
+end)
+
+witchBtn.MouseEnter:Connect(function()
+	TweenService:Create(witchBtn, TweenInfo.new(0.1), {
+		BackgroundColor3 = COLORS.blueHv
+	}):Play()
+end)
+witchBtn.MouseLeave:Connect(function()
+	TweenService:Create(witchBtn, TweenInfo.new(0.1), {
+		BackgroundColor3 = COLORS.blue
+	}):Play()
+end)
+
 -- ============================================================
 -- MINIMIZE / CLOSE
 -- ============================================================
@@ -769,16 +903,19 @@ minimizeBtn.MouseButton1Click:Connect(function()
 			Size = UDim2.new(0, FRAME_WIDTH, 0, 24)
 		}):Play()
 		toggleBtn.Visible = false
+		witchBtn.Visible = false
 	else
 		TweenService:Create(frame, TweenInfo.new(0.2), {
 			Size = UDim2.new(0, FRAME_WIDTH, 0, savedSize)
 		}):Play()
 		toggleBtn.Visible = true
+		witchBtn.Visible = true
 	end
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
 	stopLoop()
+	stopSpeedKeeper()
 	screenGui:Destroy()
 end)
 
