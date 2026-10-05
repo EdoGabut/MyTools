@@ -13,6 +13,7 @@ local CONFIG = {
 		"Workspace.NPCS",
 		"Workspace.ExplorerStand",
 		"Workspace.AuctionStand",
+		"Workspace.Map.WildPetSpawns",
 	},
 
 	-- Khusus Gardens pakai ClearAllChildren()
