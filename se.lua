@@ -1,6 +1,7 @@
 -- ============================================================
--- Item Sender v10
+-- Item Sender v11
 -- - Header fixed: 0x8C 0x01 [UserID f64] 0x42 0x1C
+-- - Category filter buttons
 -- - Multi kategori: Seeds, Sprinklers, WateringCans, Trowels
 -- ============================================================
 local Players = game:GetService("Players")
@@ -37,6 +38,10 @@ local ITEMS = {
 	-- TROWELS
 	{ display = "Trowel", lookup = "Trowel", category = "Trowels" },
 }
+
+-- ===== CATEGORY FILTER =====
+local CATEGORIES = { "All", "Seeds", "Sprinklers", "WateringCans", "Trowels" }
+local currentFilter = "All"
 
 local USERNAME_PRESETS = { "krinjguy67", "andri21649", "notexd777" }
 
@@ -85,13 +90,7 @@ local function getUserIdFromUsername(username)
 	return nil
 end
 
--- ===== PAYLOAD BUILDER (FIXED) =====
--- Format dari payload asli:
---   8C 01 [UserID f64 8B] 42 1C
---   05 01 1C "ItemKey" <str> "Count" 05 <n> "Category" <str> 00
---   05 02 1C "ItemKey" <str> "Count" 05 <n> "Category" <str> 00
---   ...
---   00 00 00
+-- ===== PAYLOAD BUILDER =====
 local function buildPayload(targetUserId, items)
 	local buf = buffer.create(2048)
 	local pos = 0
@@ -106,7 +105,7 @@ local function buildPayload(targetUserId, items)
 	-- Header
 	writeU8(0x8C); writeU8(0x01)
 	buffer.writef64(buf, pos, targetUserId); pos += 8
-	writeU8(0x42); writeU8(0x1C)  -- ← 2 byte, bukan 3
+	writeU8(0x42); writeU8(0x1C)
 
 	-- Entries
 	for i, item in ipairs(items) do
@@ -206,6 +205,8 @@ local COLORS = {
 	preset    = Color3.fromRGB(45, 45, 55),
 	presetHv  = Color3.fromRGB(60, 60, 72),
 	yellow    = Color3.fromRGB(230, 190, 120),
+	accent    = Color3.fromRGB(60, 130, 200),
+	accentHv  = Color3.fromRGB(80, 160, 230),
 }
 
 local function corner(p, r)
@@ -213,7 +214,7 @@ local function corner(p, r)
 end
 
 local FRAME_WIDTH = 250
-local FRAME_HEIGHT = 260
+local FRAME_HEIGHT = 300  -- tambah tinggi buat category row
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
@@ -259,7 +260,7 @@ UserInputService.InputChanged:Connect(function(input)
 	end
 end)
 
--- Title bar
+-- ===== TITLE BAR =====
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1, 0, 0, 30)
 titleBar.BackgroundColor3 = COLORS.header
@@ -308,7 +309,7 @@ end
 local minimizeBtn = makeTitleBtn(-54, COLORS.preset, "—")
 local closeBtn    = makeTitleBtn(-28, COLORS.red,    "×")
 
--- Body
+-- ===== BODY =====
 local body = Instance.new("Frame")
 body.Size = UDim2.new(1, -16, 1, -38)
 body.Position = UDim2.new(0, 8, 0, 34)
@@ -335,7 +336,7 @@ local uPad = Instance.new("UIPadding", userBox)
 uPad.PaddingLeft = UDim.new(0, 10)
 uPad.PaddingRight = UDim.new(0, 10)
 
--- Preset row
+-- ===== PRESET ROW =====
 local presetRow = Instance.new("Frame")
 presetRow.Size = UDim2.new(1, 0, 0, 22)
 presetRow.Position = UDim2.new(0, 0, 0, 36)
@@ -377,10 +378,77 @@ for i, uname in ipairs(USERNAME_PRESETS) do
 	end)
 end
 
+-- ===== CATEGORY FILTER ROW =====
+local catRow = Instance.new("Frame")
+catRow.Size = UDim2.new(1, 0, 0, 24)
+catRow.Position = UDim2.new(0, 0, 0, 62)
+catRow.BackgroundTransparency = 1
+catRow.Parent = body
+
+local catLayout = Instance.new("UIListLayout")
+catLayout.FillDirection = Enum.FillDirection.Horizontal
+catLayout.Padding = UDim.new(0, 3)
+catLayout.SortOrder = Enum.SortOrder.LayoutOrder
+catLayout.Parent = catRow
+
+local catButtons = {}
+
+local function setCategoryFilter(cat)
+	currentFilter = cat
+	for c, btn in pairs(catButtons) do
+		if c == cat then
+			btn.BackgroundColor3 = COLORS.accent
+			btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		else
+			btn.BackgroundColor3 = COLORS.preset
+			btn.TextColor3 = COLORS.textDim
+		end
+	end
+	-- refresh UI biar cuma tampil item yang match
+	if refreshStatus then refreshStatus() end
+end
+
+for i, cat in ipairs(CATEGORIES) do
+	local cBtn = Instance.new("TextButton")
+	cBtn.Size = UDim2.new(0, 0, 1, 0)
+	cBtn.AutomaticSize = Enum.AutomaticSize.X
+	cBtn.BackgroundColor3 = (cat == currentFilter) and COLORS.accent or COLORS.preset
+	cBtn.Text = cat
+	cBtn.TextColor3 = (cat == currentFilter) and Color3.fromRGB(255, 255, 255) or COLORS.textDim
+	cBtn.Font = Enum.Font.GothamBold
+	cBtn.TextSize = 9
+	cBtn.BorderSizePixel = 0
+	cBtn.AutoButtonColor = false
+	cBtn.LayoutOrder = i
+	cBtn.Parent = catRow
+	corner(cBtn, 5)
+	local pad = Instance.new("UIPadding", cBtn)
+	pad.PaddingLeft = UDim.new(0, 6)
+	pad.PaddingRight = UDim.new(0, 6)
+
+	catButtons[cat] = cBtn
+
+	cBtn.MouseButton1Click:Connect(function()
+		setCategoryFilter(cat)
+	end)
+	cBtn.MouseEnter:Connect(function()
+		if cat ~= currentFilter then
+			cBtn.BackgroundColor3 = COLORS.presetHv
+			cBtn.TextColor3 = COLORS.text
+		end
+	end)
+	cBtn.MouseLeave:Connect(function()
+		if cat ~= currentFilter then
+			cBtn.BackgroundColor3 = COLORS.preset
+			cBtn.TextColor3 = COLORS.textDim
+		end
+	end)
+end
+
 -- ===== INFO ITEM =====
 local infoFrame = Instance.new("Frame")
 infoFrame.Size = UDim2.new(1, 0, 0, 130)
-infoFrame.Position = UDim2.new(0, 0, 0, 62)
+infoFrame.Position = UDim2.new(0, 0, 0, 90)
 infoFrame.BackgroundColor3 = COLORS.header
 infoFrame.BorderSizePixel = 0
 infoFrame.Parent = body
@@ -438,8 +506,8 @@ corner(sendBtn, 8)
 -- STATE
 -- ============================================================
 local currentCounts = {}
-
 local infoRows = {}
+
 for i, item in ipairs(ITEMS) do
 	local lbl = Instance.new("TextLabel")
 	lbl.Size = UDim2.new(1, 0, 0, 14)
@@ -457,16 +525,23 @@ for i, item in ipairs(ITEMS) do
 	infoRows[item.display] = lbl
 end
 
-local function refreshStatus()
+function refreshStatus()
 	local combined = scanAll()
 	local totalJenis = 0
 
 	for _, item in ipairs(ITEMS) do
 		local count = lookupCount(combined, item.lookup)
 		currentCounts[item.display] = count
+
 		local row = infoRows[item.display]
 		if row then
-			if count > 0 then
+			-- filter kategori
+			local show = true
+			if currentFilter ~= "All" and item.category ~= currentFilter then
+				show = false
+			end
+
+			if count > 0 and show then
 				row.Visible = true
 				row.Text = string.format("  • %s x%d", item.display, count)
 				row.TextColor3 = COLORS.green
@@ -477,11 +552,12 @@ local function refreshStatus()
 		end
 	end
 
+	local suffix = (currentFilter == "All") and "" or (" [" .. currentFilter .. "]")
 	if totalJenis == 0 then
-		infoHeader.Text = "📦 Siap dikirim: (kosong)"
+		infoHeader.Text = "📦 Siap dikirim: (kosong)" .. suffix
 		infoHeader.TextColor3 = COLORS.disabled
 	else
-		infoHeader.Text = string.format("📦 Siap dikirim: %d jenis", totalJenis)
+		infoHeader.Text = string.format("📦 Siap dikirim: %d jenis%s", totalJenis, suffix)
 		infoHeader.TextColor3 = COLORS.textDim
 	end
 end
@@ -503,11 +579,14 @@ local function collectSendItems()
 	for _, item in ipairs(ITEMS) do
 		local count = currentCounts[item.display] or 0
 		if count > 0 then
-			table.insert(items, {
-				name = item.lookup,
-				count = math.min(count, 255),
-				category = item.category,
-			})
+			-- filter kategori
+			if currentFilter == "All" or item.category == currentFilter then
+				table.insert(items, {
+					name = item.lookup,
+					count = math.min(count, 255),
+					category = item.category,
+				})
+			end
 		end
 	end
 	return items
@@ -545,7 +624,7 @@ local function doSend(username)
 end
 
 -- ============================================================
--- MANUAL SEND
+-- SEND BUTTON
 -- ============================================================
 sendBtn.MouseButton1Click:Connect(function()
 	refreshStatus()
