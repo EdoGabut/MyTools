@@ -1,10 +1,7 @@
 -- ============================================================
--- Item Sender v8
--- - Fix: "Sprinkler" (bukan "Sprinkle")
+-- Item Sender v10
+-- - Header fixed: 0x8C 0x01 [UserID f64] 0x42 0x1C
 -- - Multi kategori: Seeds, Sprinklers, WateringCans, Trowels
--- - Manual send (button SEND)
--- - Info item: multi-baris (text wrap, tidak terpotong)
--- - Log panel + minimize
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -20,25 +17,25 @@ local remote = ReplicatedStorage:WaitForChild("SharedModules")
 
 -- ===== CONFIG =====
 local ITEMS = {
-	-- ===== SEEDS =====
+	-- SEEDS
 	{ display = "Gold",       lookup = "Gold Seed",       category = "Seeds" },
 	{ display = "Mega",       lookup = "Mega Seed",       category = "Seeds" },
 	{ display = "Rainbow",    lookup = "Rainbow Seed",    category = "Seeds" },
 	{ display = "Briar Rose", lookup = "Briar Rose Seed", category = "Seeds" },
 
-	-- ===== SPRINKLERS (nama di backpack: "Sprinkler") =====
+	-- SPRINKLERS
 	{ display = "Common Cider Sprinkler",    lookup = "Common Cider Sprinkler",    category = "Sprinklers" },
 	{ display = "Uncommon Cider Sprinkler",  lookup = "Uncommon Cider Sprinkler",  category = "Sprinklers" },
 	{ display = "Rare Cider Sprinkler",      lookup = "Rare Cider Sprinkler",      category = "Sprinklers" },
 	{ display = "Legendary Cider Sprinkler", lookup = "Legendary Cider Sprinkler", category = "Sprinklers" },
 	{ display = "Super Cider Sprinkler",     lookup = "Super Cider Sprinkler",     category = "Sprinklers" },
 
-	-- ===== WATERING CANS =====
+	-- WATERING CANS
 	{ display = "Cider Watering Can",       lookup = "Cider Watering Can",       category = "WateringCans" },
 	{ display = "Super Cider Watering Can", lookup = "Super Cider Watering Can", category = "WateringCans" },
 
-	-- ===== TROWELS =====
-	{ display = "Trowel",                   lookup = "Trowel",                   category = "Trowels" },
+	-- TROWELS
+	{ display = "Trowel", lookup = "Trowel", category = "Trowels" },
 }
 
 local USERNAME_PRESETS = { "krinjguy67", "andri21649", "notexd777" }
@@ -88,10 +85,17 @@ local function getUserIdFromUsername(username)
 	return nil
 end
 
--- ===== PAYLOAD BUILDER =====
+-- ===== PAYLOAD BUILDER (FIXED) =====
+-- Format dari payload asli:
+--   8C 01 [UserID f64 8B] 42 1C
+--   05 01 1C "ItemKey" <str> "Count" 05 <n> "Category" <str> 00
+--   05 02 1C "ItemKey" <str> "Count" 05 <n> "Category" <str> 00
+--   ...
+--   00 00 00
 local function buildPayload(targetUserId, items)
 	local buf = buffer.create(2048)
 	local pos = 0
+
 	local function writeU8(n) buffer.writeu8(buf, pos, n); pos += 1 end
 	local function writeString(s)
 		writeU8(0x0B); writeU8(#s)
@@ -102,7 +106,7 @@ local function buildPayload(targetUserId, items)
 	-- Header
 	writeU8(0x8C); writeU8(0x01)
 	buffer.writef64(buf, pos, targetUserId); pos += 8
-	writeU8(0x05); writeU8(#items); writeU8(0x1C)
+	writeU8(0x42); writeU8(0x1C)  -- ← 2 byte, bukan 3
 
 	-- Entries
 	for i, item in ipairs(items) do
@@ -113,7 +117,7 @@ local function buildPayload(targetUserId, items)
 		writeU8(0x00)
 	end
 
-	-- Penutup array
+	-- Terminator
 	writeU8(0x00); writeU8(0x00); writeU8(0x00)
 
 	local final = buffer.create(pos)
@@ -202,7 +206,6 @@ local COLORS = {
 	preset    = Color3.fromRGB(45, 45, 55),
 	presetHv  = Color3.fromRGB(60, 60, 72),
 	yellow    = Color3.fromRGB(230, 190, 120),
-	logBg     = Color3.fromRGB(14, 14, 18),
 }
 
 local function corner(p, r)
@@ -210,7 +213,7 @@ local function corner(p, r)
 end
 
 local FRAME_WIDTH = 250
-local FRAME_HEIGHT = 380
+local FRAME_HEIGHT = 260
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
@@ -376,7 +379,7 @@ end
 
 -- ===== INFO ITEM =====
 local infoFrame = Instance.new("Frame")
-infoFrame.Size = UDim2.new(1, 0, 0, 90)
+infoFrame.Size = UDim2.new(1, 0, 0, 130)
 infoFrame.Position = UDim2.new(0, 0, 0, 62)
 infoFrame.BackgroundColor3 = COLORS.header
 infoFrame.BorderSizePixel = 0
@@ -417,49 +420,6 @@ infoLayout.SortOrder = Enum.SortOrder.LayoutOrder
 infoLayout.Padding = UDim.new(0, 2)
 infoLayout.Parent = infoScroll
 
--- ===== LOG PANEL =====
-local logFrame = Instance.new("Frame")
-logFrame.Size = UDim2.new(1, 0, 0, 110)
-logFrame.Position = UDim2.new(0, 0, 0, 158)
-logFrame.BackgroundColor3 = COLORS.logBg
-logFrame.BorderSizePixel = 0
-logFrame.Parent = body
-corner(logFrame, 6)
-
-local lPad = Instance.new("UIPadding", logFrame)
-lPad.PaddingLeft = UDim.new(0, 8)
-lPad.PaddingRight = UDim.new(0, 8)
-lPad.PaddingTop = UDim.new(0, 4)
-lPad.PaddingBottom = UDim.new(0, 4)
-
-local logHeader = Instance.new("TextLabel")
-logHeader.Size = UDim2.new(1, 0, 0, 14)
-logHeader.BackgroundTransparency = 1
-logHeader.Text = "📜 Log:"
-logHeader.TextColor3 = COLORS.textDim
-logHeader.Font = Enum.Font.Code
-logHeader.TextSize = 10
-logHeader.TextXAlignment = Enum.TextXAlignment.Left
-logHeader.Parent = logFrame
-
-local logScroll = Instance.new("ScrollingFrame")
-logScroll.Size = UDim2.new(1, 0, 1, -16)
-logScroll.Position = UDim2.new(0, 0, 0, 16)
-logScroll.BackgroundTransparency = 1
-logScroll.BorderSizePixel = 0
-logScroll.ScrollBarThickness = 3
-logScroll.ScrollBarImageColor3 = COLORS.presetHv
-logScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-logScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-logScroll.ScrollingDirection = Enum.ScrollingDirection.Y
-logScroll.Parent = logFrame
-
-local logLayout = Instance.new("UIListLayout")
-logLayout.FillDirection = Enum.FillDirection.Vertical
-logLayout.SortOrder = Enum.SortOrder.LayoutOrder
-logLayout.Padding = UDim.new(0, 2)
-logLayout.Parent = logScroll
-
 -- Send button
 local sendBtn = Instance.new("TextButton")
 sendBtn.Size = UDim2.new(1, 0, 0, 36)
@@ -478,33 +438,6 @@ corner(sendBtn, 8)
 -- STATE
 -- ============================================================
 local currentCounts = {}
-local logLines = {}
-local MAX_LOG_LINES = 12
-
-local function pushLog(line)
-	local time = os.date("%H:%M:%S")
-	local entry = string.format("[%s] %s", time, line)
-
-	local lbl = Instance.new("TextLabel")
-	lbl.Size = UDim2.new(1, 0, 0, 0)
-	lbl.AutomaticSize = Enum.AutomaticSize.Y
-	lbl.BackgroundTransparency = 1
-	lbl.Text = entry
-	lbl.TextColor3 = COLORS.textDim
-	lbl.Font = Enum.Font.Code
-	lbl.TextSize = 10
-	lbl.TextXAlignment = Enum.TextXAlignment.Left
-	lbl.TextYAlignment = Enum.TextYAlignment.Top
-	lbl.TextWrapped = true
-	lbl.LayoutOrder = -os.time()
-	lbl.Parent = logScroll
-
-	table.insert(logLines, 1, lbl)
-	while #logLines > MAX_LOG_LINES do
-		local old = table.remove(logLines)
-		if old then old:Destroy() end
-	end
-end
 
 local infoRows = {}
 for i, item in ipairs(ITEMS) do
@@ -608,11 +541,7 @@ local function doSend(username)
 		return false, "fire fail"
 	end
 
-	local itemLines = {}
-	for _, it in ipairs(items) do
-		table.insert(itemLines, string.format("  • %s x%d (%s)", it.name, it.count, it.category))
-	end
-	return true, string.format("→ %s\n%s", username, table.concat(itemLines, "\n"))
+	return true, string.format("%d item → %s", #items, username)
 end
 
 -- ============================================================
@@ -633,10 +562,8 @@ sendBtn.MouseButton1Click:Connect(function()
 	task.spawn(function()
 		local ok, msg = doSend(username)
 		if ok then
-			pushLog("✅ " .. msg)
-			flashSend("✅ Terkirim", COLORS.green, 2)
+			flashSend("✅ " .. msg, COLORS.green, 2)
 		else
-			pushLog("❌ Gagal: " .. msg)
 			flashSend("❌ " .. msg, COLORS.red, 2)
 		end
 		task.wait(1.5)
@@ -697,4 +624,3 @@ end)
 -- INIT
 -- ============================================================
 refreshStatus()
-pushLog("siap")
