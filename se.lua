@@ -1,8 +1,9 @@
 -- ============================================================
--- Seed Sender Minimalis
--- - Status seed (hotbar + backpack)
--- - Button SEND dengan auto payload (1-5 jenis)
--- - Username preset: krinjguy67, andri21649, notexd777
+-- Watering Can Sender
+-- - Kirim: Uncommon, Rare, Legendary, Super Cider Watering Can
+-- - Status count dari hotbar + backpack
+-- - Auto payload (1-4 item)
+-- - Username preset
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -15,20 +16,20 @@ local remote = ReplicatedStorage:WaitForChild("SharedModules")
 	:WaitForChild("Packet"):WaitForChild("RemoteEvent")
 
 -- ===== CONFIG =====
-local SEEDS = {
-	{ display = "Spirethorn", lookup = "Spirethorn Seed" },
-	{ display = "Briar Rose",      lookup = "Briar Rose Seed" },
-	{ display = "Gold",            lookup = "Gold Seed" },
-	{ display = "Mega",            lookup = "Mega Seed" },
-	{ display = "Rainbow",         lookup = "Rainbow Seed" },
+local ITEMS = {
+	{ display = "Uncommon Cider Watering Can",  lookup = "Uncommon Cider Watering Can" },
+	{ display = "Rare Cider Watering Can",      lookup = "Rare Cider Watering Can" },
+	{ display = "Legendary Cider Watering Can", lookup = "Legendary Cider Watering Can" },
+	{ display = "Super Cider Watering Can",     lookup = "Super Cider Watering Can" },
 }
+
+local CATEGORY = "WateringCans"
 
 local USERNAME_PRESETS = { "krinjguy67", "andri21649", "notexd777" }
 
--- Path relatif dari PlayerGui
-local HOTBAR_PATH    = { "BackpackGui", "Backpack", "Hotbar" }
-local BACKPACK_PATH  = { "BackpackGui", "Backpack", "Inventory", "ScrollingFrame", "UIGridFrame" }
-local TOOL_NAME_LABEL = "ToolName"
+local HOTBAR_PATH   = { "BackpackGui", "Backpack", "Hotbar" }
+local BACKPACK_PATH = { "BackpackGui", "Backpack", "Inventory", "ScrollingFrame", "UIGridFrame" }
+local TOOL_NAME_LABEL  = "ToolName"
 local TOOL_COUNT_LABEL = "ToolCount"
 
 -- ===== USERNAME → ID =====
@@ -72,34 +73,12 @@ local function getUserIdFromUsername(username)
 	return nil
 end
 
--- ===== PAYLOAD BUILDERS =====
-local function buildSinglePayload(targetUserId, itemName, count, category)
-	local buf = buffer.create(512)
-	local pos = 0
-	local function writeU8(n) buffer.writeu8(buf, pos, n); pos += 1 end
-	local function writeString(s)
-		writeU8(0x0B); writeU8(#s)
-		for i = 1, #s do writeU8(string.byte(s, i)) end
-	end
-	local function writeInt(n) writeU8(0x05); writeU8(n) end
-
-	writeU8(0x8C); writeU8(0x01); writeU8(0x69)
-	buffer.writef64(buf, pos, targetUserId); pos += 8
-	writeU8(0x1C); writeU8(0x05); writeU8(0x01); writeU8(0x1C)
-
-	writeString("ItemKey"); writeString(itemName)
-	writeString("Count"); writeInt(count)
-	writeString("Category"); writeString(category)
-	writeU8(0x00); writeU8(0x00); writeU8(0x00)
-
-	local final = buffer.create(pos)
-	buffer.copy(final, 0, buf, 0, pos)
-	return final
-end
-
-local function buildMultiPayload(targetUserId, items, category)
+-- ===== PAYLOAD BUILDER =====
+-- Format header: 8C 01 69 [UserID f64] 1C 05 01 1C
+local function buildPayload(targetUserId, items)
 	local buf = buffer.create(2048)
 	local pos = 0
+
 	local function writeU8(n) buffer.writeu8(buf, pos, n); pos += 1 end
 	local function writeString(s)
 		writeU8(0x0B); writeU8(#s)
@@ -107,19 +86,25 @@ local function buildMultiPayload(targetUserId, items, category)
 	end
 	local function writeInt(n) writeU8(0x05); writeU8(n) end
 
+	-- Header
 	writeU8(0x8C); writeU8(0x01); writeU8(0x69)
 	buffer.writef64(buf, pos, targetUserId); pos += 8
 	writeU8(0x1C); writeU8(0x05); writeU8(0x01); writeU8(0x1C)
 
+	-- Entries
 	for i, item in ipairs(items) do
-		writeString("ItemKey"); writeString(item.name)
-		writeString("Count"); writeInt(item.count)
-		writeString("Category"); writeString(category or "Seeds")
-		writeU8(0x00)
-		if i < #items then
-			writeU8(0x05); writeU8(i + 1); writeU8(0x1C)
+		-- Item 1: no prefix. Item 2+ : 05 <nomor> 1C
+		if i > 1 then
+			writeU8(0x05); writeU8(i); writeU8(0x1C)
 		end
+
+		writeString("ItemKey");  writeString(item.name)
+		writeString("Count");    writeInt(item.count)
+		writeString("Category"); writeString(CATEGORY)
+		writeU8(0x00)
 	end
+
+	-- Terminator
 	writeU8(0x00); writeU8(0x00); writeU8(0x00)
 
 	local final = buffer.create(pos)
@@ -127,7 +112,7 @@ local function buildMultiPayload(targetUserId, items, category)
 	return final
 end
 
--- ===== SCANNER (hotbar + backpack) =====
+-- ===== SCANNER =====
 local function resolveFromPlayerGui(parts)
 	local node = player:FindFirstChild("PlayerGui")
 	if not node then return nil end
@@ -164,19 +149,15 @@ local function scanContainer(container)
 end
 
 local function scanAll()
-	local hotbarContainer = resolveFromPlayerGui(HOTBAR_PATH)
-	local backpackContainer = resolveFromPlayerGui(BACKPACK_PATH)
-	local hotbarMap = scanContainer(hotbarContainer)
-	local backpackMap = scanContainer(backpackContainer)
-
+	local hotbarMap = scanContainer(resolveFromPlayerGui(HOTBAR_PATH))
+	local backpackMap = scanContainer(resolveFromPlayerGui(BACKPACK_PATH))
 	local combined = {}
 	for _, map in pairs({ hotbarMap, backpackMap }) do
 		for name, count in pairs(map) do
 			combined[name] = (combined[name] or 0) + count
 		end
 	end
-
-	return combined, hotbarMap, backpackMap
+	return combined
 end
 
 local function lookupCount(map, itemName)
@@ -193,7 +174,7 @@ end
 -- ===== BUILD GUI =====
 -- ============================================================
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "SeedSenderMini"
+screenGui.Name = "WateringCanSender"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
@@ -222,7 +203,7 @@ local function corner(p, r)
 end
 
 local FRAME_WIDTH = 260
-local FRAME_HEIGHT = 330
+local FRAME_HEIGHT = 310
 local FRAME_HEIGHT_MIN = 32
 
 local frame = Instance.new("Frame")
@@ -239,7 +220,7 @@ stroke.Color = COLORS.stroke
 stroke.Transparency = 0.4
 stroke.Parent = frame
 
--- Drag (touch friendly)
+-- Drag
 local dragging, dragStart, startPos
 frame.InputBegan:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1
@@ -287,7 +268,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -50, 1, 0)
 title.Position = UDim2.new(0, 12, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "📨 Seed Sender"
+title.Text = "🚿 Watering Can Sender"
 title.TextColor3 = COLORS.text
 title.Font = Enum.Font.GothamBold
 title.TextSize = 12
@@ -316,7 +297,7 @@ body.Position = UDim2.new(0, 8, 0, 38)
 body.BackgroundTransparency = 1
 body.Parent = frame
 
--- ===== USERNAME INPUT =====
+-- Username input
 local userBox = Instance.new("TextBox")
 userBox.Size = UDim2.new(1, 0, 0, 34)
 userBox.Position = UDim2.new(0, 0, 0, 0)
@@ -336,7 +317,7 @@ local uPad = Instance.new("UIPadding", userBox)
 uPad.PaddingLeft = UDim.new(0, 10)
 uPad.PaddingRight = UDim.new(0, 10)
 
--- ===== USERNAME PRESETS =====
+-- Preset row
 local presetRow = Instance.new("Frame")
 presetRow.Size = UDim2.new(1, 0, 0, 24)
 presetRow.Position = UDim2.new(0, 0, 0, 40)
@@ -380,13 +361,13 @@ for i, uname in ipairs(USERNAME_PRESETS) do
 	end)
 end
 
--- ===== INFO LABEL =====
+-- Info label
 local infoLbl = Instance.new("TextLabel")
 infoLbl.Size = UDim2.new(1, 0, 0, 20)
 infoLbl.Position = UDim2.new(0, 0, 0, 68)
 infoLbl.BackgroundColor3 = COLORS.header
 infoLbl.BorderSizePixel = 0
-infoLbl.Text = "  Status seed di hotbar + backpack"
+infoLbl.Text = "  Status watering can di hotbar + backpack"
 infoLbl.TextColor3 = COLORS.textDim
 infoLbl.Font = Enum.Font.Code
 infoLbl.TextSize = 10
@@ -394,13 +375,13 @@ infoLbl.TextXAlignment = Enum.TextXAlignment.Left
 infoLbl.Parent = body
 corner(infoLbl, 5)
 
--- ===== SEED STATUS ROWS =====
+-- ===== STATUS ROWS =====
 local rowRefs = {}
 local yStart = 92
-local rowHeight = 30
+local rowHeight = 34
 local rowGap = 4
 
-for i, seed in ipairs(SEEDS) do
+for i, item in ipairs(ITEMS) do
 	local y = yStart + (i - 1) * (rowHeight + rowGap)
 
 	local row = Instance.new("Frame")
@@ -415,7 +396,7 @@ for i, seed in ipairs(SEEDS) do
 	nameLbl.Size = UDim2.new(1, -70, 1, 0)
 	nameLbl.Position = UDim2.new(0, 10, 0, 0)
 	nameLbl.BackgroundTransparency = 1
-	nameLbl.Text = seed.display
+	nameLbl.Text = item.display
 	nameLbl.TextColor3 = COLORS.text
 	nameLbl.Font = Enum.Font.GothamMedium
 	nameLbl.TextSize = 11
@@ -434,7 +415,7 @@ for i, seed in ipairs(SEEDS) do
 	countLbl.TextXAlignment = Enum.TextXAlignment.Right
 	countLbl.Parent = row
 
-	rowRefs[seed.display] = {
+	rowRefs[item.display] = {
 		row = row,
 		nameLbl = nameLbl,
 		countLbl = countLbl,
@@ -442,8 +423,8 @@ for i, seed in ipairs(SEEDS) do
 	}
 end
 
--- ===== TOTAL ROW =====
-local totalY = yStart + #SEEDS * (rowHeight + rowGap) + 4
+-- Total row
+local totalY = yStart + #ITEMS * (rowHeight + rowGap) + 4
 
 local totalRow = Instance.new("Frame")
 totalRow.Size = UDim2.new(1, 0, 0, 26)
@@ -464,7 +445,7 @@ totalLbl.TextSize = 11
 totalLbl.TextXAlignment = Enum.TextXAlignment.Left
 totalLbl.Parent = totalRow
 
--- ===== SEND BUTTON =====
+-- Send button
 local sendBtn = Instance.new("TextButton")
 sendBtn.Size = UDim2.new(1, 0, 0, 40)
 sendBtn.Position = UDim2.new(0, 0, 1, -40)
@@ -480,12 +461,12 @@ corner(sendBtn, 8)
 
 -- ===== REFRESH STATUS =====
 local function refreshStatus()
-	local combined, _, _ = scanAll()
+	local combined = scanAll()
 	local totalJenis = 0
 
-	for _, seed in ipairs(SEEDS) do
-		local count = lookupCount(combined, seed.lookup)
-		local ref = rowRefs[seed.display]
+	for _, item in ipairs(ITEMS) do
+		local count = lookupCount(combined, item.lookup)
+		local ref = rowRefs[item.display]
 		if ref then
 			ref.count = count
 			ref.countLbl.Text = "x" .. count
@@ -517,24 +498,23 @@ local function flashSend(text, color, duration)
 end
 
 sendBtn.MouseButton1Click:Connect(function()
-	-- Refresh status dulu
 	refreshStatus()
 
-	-- Collect seed yang ada (count > 0)
+	-- Collect item yang ada
 	local sendItems = {}
-	for _, seed in ipairs(SEEDS) do
-		local ref = rowRefs[seed.display]
+	for _, item in ipairs(ITEMS) do
+		local ref = rowRefs[item.display]
 		if ref and ref.count > 0 then
 			local count = math.min(ref.count, 255)
 			table.insert(sendItems, {
-				name = seed.display,
+				name = item.display,
 				count = count,
 			})
 		end
 	end
 
 	if #sendItems == 0 then
-		flashSend("❌ Gak ada seed", COLORS.red)
+		flashSend("❌ Gak ada watering can", COLORS.red)
 		return
 	end
 
@@ -554,14 +534,7 @@ sendBtn.MouseButton1Click:Connect(function()
 			return
 		end
 
-		-- Auto pilih payload builder
-		local payload
-		if #sendItems == 1 then
-			payload = buildSinglePayload(targetId, sendItems[1].name, sendItems[1].count, "Seeds")
-		else
-			payload = buildMultiPayload(targetId, sendItems, "Seeds")
-		end
-
+		local payload = buildPayload(targetId, sendItems)
 		if not payload then
 			flashSend("❌ Payload fail", COLORS.red)
 			return
