@@ -1,8 +1,10 @@
 -- ============================================================
--- Seed Sender v3
--- - Auto-send: 1 Briar Rose ATAU 5 Spirethorn → langsung kirim
--- - Log panel: nampilin history kirim ke siapa
--- - Minimize button
+-- Item Sender v8
+-- - Fix: "Sprinkler" (bukan "Sprinkle")
+-- - Multi kategori: Seeds, Sprinklers, WateringCans, Trowels
+-- - Manual send (button SEND)
+-- - Info item: multi-baris (text wrap, tidak terpotong)
+-- - Log panel + minimize
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -17,12 +19,26 @@ local remote = ReplicatedStorage:WaitForChild("SharedModules")
 	:WaitForChild("Packet"):WaitForChild("RemoteEvent")
 
 -- ===== CONFIG =====
-local SEEDS = {
-	{ display = "Spirethorn", lookup = "Spirethorn Seed" },
-	{ display = "Briar Rose", lookup = "Briar Rose Seed" },
-	{ display = "Gold",       lookup = "Gold Seed" },
-	{ display = "Mega",       lookup = "Mega Seed" },
-	{ display = "Rainbow",    lookup = "Rainbow Seed" },
+local ITEMS = {
+	-- ===== SEEDS =====
+	{ display = "Gold",       lookup = "Gold Seed",       category = "Seeds" },
+	{ display = "Mega",       lookup = "Mega Seed",       category = "Seeds" },
+	{ display = "Rainbow",    lookup = "Rainbow Seed",    category = "Seeds" },
+	{ display = "Briar Rose", lookup = "Briar Rose Seed", category = "Seeds" },
+
+	-- ===== SPRINKLERS (nama di backpack: "Sprinkler") =====
+	{ display = "Common Cider Sprinkler",    lookup = "Common Cider Sprinkler",    category = "Sprinklers" },
+	{ display = "Uncommon Cider Sprinkler",  lookup = "Uncommon Cider Sprinkler",  category = "Sprinklers" },
+	{ display = "Rare Cider Sprinkler",      lookup = "Rare Cider Sprinkler",      category = "Sprinklers" },
+	{ display = "Legendary Cider Sprinkler", lookup = "Legendary Cider Sprinkler", category = "Sprinklers" },
+	{ display = "Super Cider Sprinkler",     lookup = "Super Cider Sprinkler",     category = "Sprinklers" },
+
+	-- ===== WATERING CANS =====
+	{ display = "Cider Watering Can",       lookup = "Cider Watering Can",       category = "WateringCans" },
+	{ display = "Super Cider Watering Can", lookup = "Super Cider Watering Can", category = "WateringCans" },
+
+	-- ===== TROWELS =====
+	{ display = "Trowel",                   lookup = "Trowel",                   category = "Trowels" },
 }
 
 local USERNAME_PRESETS = { "krinjguy67", "andri21649", "notexd777" }
@@ -31,21 +47,6 @@ local HOTBAR_PATH   = { "BackpackGui", "Backpack", "Hotbar" }
 local BACKPACK_PATH = { "BackpackGui", "Backpack", "Inventory", "ScrollingFrame", "UIGridFrame" }
 local TOOL_NAME_LABEL  = "ToolName"
 local TOOL_COUNT_LABEL = "ToolCount"
-
--- Auto-send rules: begitu salah satu kondisi terpenuhi → kirim
-local AUTO_SEND = {
-	ENABLED = true,
-	-- kirim semua seed yang ada begitu trigger terpenuhi
-	TRIGGERS = {
-		{ display = "Briar Rose", min = 1 },   -- ≥1 Briar Rose
-		{ display = "Spirethorn", min = 5 },   -- ≥5 Spirethorn
-	},
-	-- username target (kalau nil, ambil dari preset pertama atau input manual)
-	TARGET_MODE = "manual",  -- "manual" | "rotate" | "fixed"
-	FIXED_TARGET = "krinjguy67",
-	-- jeda minimum antar auto-send (biar nggak spam)
-	COOLDOWN = 3,
-}
 
 -- ===== USERNAME → ID =====
 local idCache = {}
@@ -87,32 +88,8 @@ local function getUserIdFromUsername(username)
 	return nil
 end
 
--- ===== PAYLOAD BUILDERS =====
-local function buildSinglePayload(targetUserId, itemName, count, category)
-	local buf = buffer.create(512)
-	local pos = 0
-	local function writeU8(n) buffer.writeu8(buf, pos, n); pos += 1 end
-	local function writeString(s)
-		writeU8(0x0B); writeU8(#s)
-		for i = 1, #s do writeU8(string.byte(s, i)) end
-	end
-	local function writeInt(n) writeU8(0x05); writeU8(n) end
-
-	writeU8(0x8C); writeU8(0x01); writeU8(0x69)
-	buffer.writef64(buf, pos, targetUserId); pos += 8
-	writeU8(0x1C); writeU8(0x05); writeU8(0x01); writeU8(0x1C)
-
-	writeString("ItemKey"); writeString(itemName)
-	writeString("Count"); writeInt(count)
-	writeString("Category"); writeString(category)
-	writeU8(0x00); writeU8(0x00); writeU8(0x00)
-
-	local final = buffer.create(pos)
-	buffer.copy(final, 0, buf, 0, pos)
-	return final
-end
-
-local function buildMultiPayload(targetUserId, items, category)
+-- ===== PAYLOAD BUILDER =====
+local function buildPayload(targetUserId, items)
 	local buf = buffer.create(2048)
 	local pos = 0
 	local function writeU8(n) buffer.writeu8(buf, pos, n); pos += 1 end
@@ -122,19 +99,21 @@ local function buildMultiPayload(targetUserId, items, category)
 	end
 	local function writeInt(n) writeU8(0x05); writeU8(n) end
 
-	writeU8(0x8C); writeU8(0x01); writeU8(0x69)
+	-- Header
+	writeU8(0x8C); writeU8(0x01)
 	buffer.writef64(buf, pos, targetUserId); pos += 8
-	writeU8(0x1C); writeU8(0x05); writeU8(0x01); writeU8(0x1C)
+	writeU8(0x05); writeU8(#items); writeU8(0x1C)
 
+	-- Entries
 	for i, item in ipairs(items) do
-		writeString("ItemKey"); writeString(item.name)
-		writeString("Count"); writeInt(item.count)
-		writeString("Category"); writeString(category or "Seeds")
+		writeU8(0x05); writeU8(i); writeU8(0x1C)
+		writeString("ItemKey");  writeString(item.name)
+		writeString("Count");    writeInt(item.count)
+		writeString("Category"); writeString(item.category or "Seeds")
 		writeU8(0x00)
-		if i < #items then
-			writeU8(0x05); writeU8(i + 1); writeU8(0x1C)
-		end
 	end
+
+	-- Penutup array
 	writeU8(0x00); writeU8(0x00); writeU8(0x00)
 
 	local final = buffer.create(pos)
@@ -179,11 +158,8 @@ local function scanContainer(container)
 end
 
 local function scanAll()
-	local hotbarContainer = resolveFromPlayerGui(HOTBAR_PATH)
-	local backpackContainer = resolveFromPlayerGui(BACKPACK_PATH)
-	local hotbarMap = scanContainer(hotbarContainer)
-	local backpackMap = scanContainer(backpackContainer)
-
+	local hotbarMap = scanContainer(resolveFromPlayerGui(HOTBAR_PATH))
+	local backpackMap = scanContainer(resolveFromPlayerGui(BACKPACK_PATH))
 	local combined = {}
 	for _, map in pairs({ hotbarMap, backpackMap }) do
 		for name, count in pairs(map) do
@@ -206,6 +182,11 @@ end
 -- ============================================================
 -- GUI
 -- ============================================================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "ItemSenderMini"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
 local COLORS = {
 	bg        = Color3.fromRGB(22, 22, 28),
 	header    = Color3.fromRGB(16, 16, 20),
@@ -229,7 +210,7 @@ local function corner(p, r)
 end
 
 local FRAME_WIDTH = 250
-local FRAME_HEIGHT = 260   -- lebih tinggi karena ada log
+local FRAME_HEIGHT = 380
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
@@ -239,13 +220,6 @@ frame.BorderSizePixel = 0
 frame.Active = true
 frame.Parent = screenGui
 corner(frame, 12)
-
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "SeedSenderMini"
-screenGui.ResetOnSpawn = false
-screenGui.Parent = player:WaitForChild("PlayerGui")
--- (pindah ke atas setelah instance dibuat)
-frame.Parent = screenGui
 
 local stroke = Instance.new("UIStroke")
 stroke.Color = COLORS.stroke
@@ -282,7 +256,7 @@ UserInputService.InputChanged:Connect(function(input)
 	end
 end)
 
--- ===== TITLE BAR =====
+-- Title bar
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1, 0, 0, 30)
 titleBar.BackgroundColor3 = COLORS.header
@@ -303,7 +277,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -80, 1, 0)
 title.Position = UDim2.new(0, 12, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "📨 Seed Sender"
+title.Text = "📨 Item Sender"
 title.TextColor3 = COLORS.text
 title.Font = Enum.Font.GothamBold
 title.TextSize = 12
@@ -331,7 +305,7 @@ end
 local minimizeBtn = makeTitleBtn(-54, COLORS.preset, "—")
 local closeBtn    = makeTitleBtn(-28, COLORS.red,    "×")
 
--- ===== BODY =====
+-- Body
 local body = Instance.new("Frame")
 body.Size = UDim2.new(1, -16, 1, -38)
 body.Position = UDim2.new(0, 8, 0, 34)
@@ -389,9 +363,7 @@ for i, uname in ipairs(USERNAME_PRESETS) do
 	pad.PaddingLeft = UDim.new(0, 8)
 	pad.PaddingRight = UDim.new(0, 8)
 
-	pBtn.MouseButton1Click:Connect(function()
-		userBox.Text = uname
-	end)
+	pBtn.MouseButton1Click:Connect(function() userBox.Text = uname end)
 	pBtn.MouseEnter:Connect(function()
 		pBtn.BackgroundColor3 = COLORS.presetHv
 		pBtn.TextColor3 = COLORS.text
@@ -402,46 +374,93 @@ for i, uname in ipairs(USERNAME_PRESETS) do
 	end)
 end
 
--- Info seed (1 baris ringkas)
-local infoLbl = Instance.new("TextLabel")
-infoLbl.Size = UDim2.new(1, 0, 0, 24)
-infoLbl.Position = UDim2.new(0, 0, 0, 62)
-infoLbl.BackgroundColor3 = COLORS.header
-infoLbl.BorderSizePixel = 0
-infoLbl.Text = "🌱 Memuat..."
-infoLbl.TextColor3 = COLORS.textDim
-infoLbl.Font = Enum.Font.Code
-infoLbl.TextSize = 10
-infoLbl.TextXAlignment = Enum.TextXAlignment.Left
-infoLbl.TextTruncate = Enum.TextTruncate.AtEnd
-infoLbl.Parent = body
-corner(infoLbl, 6)
-local iPad = Instance.new("UIPadding", infoLbl)
+-- ===== INFO ITEM =====
+local infoFrame = Instance.new("Frame")
+infoFrame.Size = UDim2.new(1, 0, 0, 90)
+infoFrame.Position = UDim2.new(0, 0, 0, 62)
+infoFrame.BackgroundColor3 = COLORS.header
+infoFrame.BorderSizePixel = 0
+infoFrame.Parent = body
+corner(infoFrame, 6)
+
+local iPad = Instance.new("UIPadding", infoFrame)
 iPad.PaddingLeft = UDim.new(0, 8)
 iPad.PaddingRight = UDim.new(0, 8)
+iPad.PaddingTop = UDim.new(0, 4)
+iPad.PaddingBottom = UDim.new(0, 4)
+
+local infoHeader = Instance.new("TextLabel")
+infoHeader.Size = UDim2.new(1, 0, 0, 14)
+infoHeader.BackgroundTransparency = 1
+infoHeader.Text = "📦 Siap dikirim:"
+infoHeader.TextColor3 = COLORS.textDim
+infoHeader.Font = Enum.Font.Code
+infoHeader.TextSize = 10
+infoHeader.TextXAlignment = Enum.TextXAlignment.Left
+infoHeader.Parent = infoFrame
+
+local infoScroll = Instance.new("ScrollingFrame")
+infoScroll.Size = UDim2.new(1, 0, 1, -16)
+infoScroll.Position = UDim2.new(0, 0, 0, 16)
+infoScroll.BackgroundTransparency = 1
+infoScroll.BorderSizePixel = 0
+infoScroll.ScrollBarThickness = 3
+infoScroll.ScrollBarImageColor3 = COLORS.presetHv
+infoScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+infoScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+infoScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+infoScroll.Parent = infoFrame
+
+local infoLayout = Instance.new("UIListLayout")
+infoLayout.FillDirection = Enum.FillDirection.Vertical
+infoLayout.SortOrder = Enum.SortOrder.LayoutOrder
+infoLayout.Padding = UDim.new(0, 2)
+infoLayout.Parent = infoScroll
 
 -- ===== LOG PANEL =====
-local logLbl = Instance.new("TextLabel")
-logLbl.Size = UDim2.new(1, 0, 0, 58)
-logLbl.Position = UDim2.new(0, 0, 0, 90)
-logLbl.BackgroundColor3 = COLORS.logBg
-logLbl.BorderSizePixel = 0
-logLbl.Text = "📜 Log:\n  (belum ada aktivitas)"
-logLbl.TextColor3 = COLORS.textDim
-logLbl.Font = Enum.Font.Code
-logLbl.TextSize = 10
-logLbl.TextXAlignment = Enum.TextXAlignment.Left
-logLbl.TextYAlignment = Enum.TextYAlignment.Top
-logLbl.TextWrapped = true
-logLbl.Parent = body
-corner(logLbl, 6)
-local lPad = Instance.new("UIPadding", logLbl)
+local logFrame = Instance.new("Frame")
+logFrame.Size = UDim2.new(1, 0, 0, 110)
+logFrame.Position = UDim2.new(0, 0, 0, 158)
+logFrame.BackgroundColor3 = COLORS.logBg
+logFrame.BorderSizePixel = 0
+logFrame.Parent = body
+corner(logFrame, 6)
+
+local lPad = Instance.new("UIPadding", logFrame)
 lPad.PaddingLeft = UDim.new(0, 8)
 lPad.PaddingRight = UDim.new(0, 8)
 lPad.PaddingTop = UDim.new(0, 4)
 lPad.PaddingBottom = UDim.new(0, 4)
 
--- ===== SEND BUTTON =====
+local logHeader = Instance.new("TextLabel")
+logHeader.Size = UDim2.new(1, 0, 0, 14)
+logHeader.BackgroundTransparency = 1
+logHeader.Text = "📜 Log:"
+logHeader.TextColor3 = COLORS.textDim
+logHeader.Font = Enum.Font.Code
+logHeader.TextSize = 10
+logHeader.TextXAlignment = Enum.TextXAlignment.Left
+logHeader.Parent = logFrame
+
+local logScroll = Instance.new("ScrollingFrame")
+logScroll.Size = UDim2.new(1, 0, 1, -16)
+logScroll.Position = UDim2.new(0, 0, 0, 16)
+logScroll.BackgroundTransparency = 1
+logScroll.BorderSizePixel = 0
+logScroll.ScrollBarThickness = 3
+logScroll.ScrollBarImageColor3 = COLORS.presetHv
+logScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+logScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+logScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+logScroll.Parent = logFrame
+
+local logLayout = Instance.new("UIListLayout")
+logLayout.FillDirection = Enum.FillDirection.Vertical
+logLayout.SortOrder = Enum.SortOrder.LayoutOrder
+logLayout.Padding = UDim.new(0, 2)
+logLayout.Parent = logScroll
+
+-- Send button
 local sendBtn = Instance.new("TextButton")
 sendBtn.Size = UDim2.new(1, 0, 0, 36)
 sendBtn.Position = UDim2.new(0, 0, 1, -36)
@@ -459,40 +478,78 @@ corner(sendBtn, 8)
 -- STATE
 -- ============================================================
 local currentCounts = {}
-local lastSendTime = 0
 local logLines = {}
-local MAX_LOG_LINES = 4
+local MAX_LOG_LINES = 12
 
 local function pushLog(line)
 	local time = os.date("%H:%M:%S")
 	local entry = string.format("[%s] %s", time, line)
-	table.insert(logLines, 1, entry)  -- newest di atas
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, 0, 0, 0)
+	lbl.AutomaticSize = Enum.AutomaticSize.Y
+	lbl.BackgroundTransparency = 1
+	lbl.Text = entry
+	lbl.TextColor3 = COLORS.textDim
+	lbl.Font = Enum.Font.Code
+	lbl.TextSize = 10
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.TextYAlignment = Enum.TextYAlignment.Top
+	lbl.TextWrapped = true
+	lbl.LayoutOrder = -os.time()
+	lbl.Parent = logScroll
+
+	table.insert(logLines, 1, lbl)
 	while #logLines > MAX_LOG_LINES do
-		table.remove(logLines)
+		local old = table.remove(logLines)
+		if old then old:Destroy() end
 	end
-	logLbl.Text = "📜 Log:\n" .. table.concat(logLines, "\n")
+end
+
+local infoRows = {}
+for i, item in ipairs(ITEMS) do
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, 0, 0, 14)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = "  • " .. item.display .. " x0"
+	lbl.TextColor3 = COLORS.disabled
+	lbl.Font = Enum.Font.Code
+	lbl.TextSize = 10
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.TextYAlignment = Enum.TextYAlignment.Top
+	lbl.TextWrapped = true
+	lbl.LayoutOrder = i
+	lbl.Visible = false
+	lbl.Parent = infoScroll
+	infoRows[item.display] = lbl
 end
 
 local function refreshStatus()
 	local combined = scanAll()
-	local parts = {}
 	local totalJenis = 0
 
-	for _, seed in ipairs(SEEDS) do
-		local count = lookupCount(combined, seed.lookup)
-		currentCounts[seed.display] = count
-		if count > 0 then
-			totalJenis += 1
-			table.insert(parts, string.format("%s x%d", seed.display, count))
+	for _, item in ipairs(ITEMS) do
+		local count = lookupCount(combined, item.lookup)
+		currentCounts[item.display] = count
+		local row = infoRows[item.display]
+		if row then
+			if count > 0 then
+				row.Visible = true
+				row.Text = string.format("  • %s x%d", item.display, count)
+				row.TextColor3 = COLORS.green
+				totalJenis += 1
+			else
+				row.Visible = false
+			end
 		end
 	end
 
 	if totalJenis == 0 then
-		infoLbl.Text = "🌱 Tidak ada seed"
-		infoLbl.TextColor3 = COLORS.disabled
+		infoHeader.Text = "📦 Siap dikirim: (kosong)"
+		infoHeader.TextColor3 = COLORS.disabled
 	else
-		infoLbl.Text = "🌱 " .. table.concat(parts, " · ")
-		infoLbl.TextColor3 = COLORS.green
+		infoHeader.Text = string.format("📦 Siap dikirim: %d jenis", totalJenis)
+		infoHeader.TextColor3 = COLORS.textDim
 	end
 end
 
@@ -508,22 +565,21 @@ local function flashSend(text, color, duration)
 	end)
 end
 
--- Kumpulkan seed yang mau dikirim (semua yang count > 0)
 local function collectSendItems()
 	local items = {}
-	for _, seed in ipairs(SEEDS) do
-		local count = currentCounts[seed.display] or 0
+	for _, item in ipairs(ITEMS) do
+		local count = currentCounts[item.display] or 0
 		if count > 0 then
 			table.insert(items, {
-				name = seed.display,
+				name = item.lookup,
 				count = math.min(count, 255),
+				category = item.category,
 			})
 		end
 	end
 	return items
 end
 
--- Kirim ke username, return true/false + pesan
 local function doSend(username)
 	if username == "" then
 		return false, "username kosong"
@@ -531,7 +587,7 @@ local function doSend(username)
 
 	local items = collectSendItems()
 	if #items == 0 then
-		return false, "gak ada seed"
+		return false, "gak ada item"
 	end
 
 	local targetId = getUserIdFromUsername(username)
@@ -539,13 +595,7 @@ local function doSend(username)
 		return false, "user '" .. username .. "' gak ketemu"
 	end
 
-	local payload
-	if #items == 1 then
-		payload = buildSinglePayload(targetId, items[1].name, items[1].count, "Seeds")
-	else
-		payload = buildMultiPayload(targetId, items, "Seeds")
-	end
-
+	local payload = buildPayload(targetId, items)
 	if not payload then
 		return false, "payload fail"
 	end
@@ -558,51 +608,23 @@ local function doSend(username)
 		return false, "fire fail"
 	end
 
-	-- ringkasan item
-	local itemStr = {}
+	local itemLines = {}
 	for _, it in ipairs(items) do
-		table.insert(itemStr, string.format("%s x%d", it.name, it.count))
+		table.insert(itemLines, string.format("  • %s x%d (%s)", it.name, it.count, it.category))
 	end
-	return true, string.format("→ %s (%s)", username, table.concat(itemStr, ", "))
-end
-
--- Cek apakah trigger auto-send terpenuhi
-local function checkAutoTrigger()
-	if not AUTO_SEND.ENABLED then return false end
-	for _, trig in ipairs(AUTO_SEND.TRIGGERS) do
-		local cnt = currentCounts[trig.display] or 0
-		if cnt >= trig.min then
-			return true, trig
-		end
-	end
-	return false
-end
-
--- Ambil username target auto
-local function getAutoTarget()
-	if AUTO_SEND.TARGET_MODE == "fixed" then
-		return AUTO_SEND.FIXED_TARGET
-	elseif AUTO_SEND.TARGET_MODE == "rotate" then
-		-- rotasi preset (belum diimplement state, fallback ke pertama)
-		return USERNAME_PRESETS[1]
-	else
-		-- manual: ambil dari input kalau ada, kalau kosong pakai preset pertama
-		local manual = userBox.Text:gsub("%s", "")
-		if manual ~= "" then return manual end
-		return USERNAME_PRESETS[1]
-	end
+	return true, string.format("→ %s\n%s", username, table.concat(itemLines, "\n"))
 end
 
 -- ============================================================
--- MANUAL SEND BUTTON
+-- MANUAL SEND
 -- ============================================================
 sendBtn.MouseButton1Click:Connect(function()
 	refreshStatus()
 
 	local username = userBox.Text:gsub("%s", "")
 	if username == "" then
-		username = getAutoTarget()
-		userBox.Text = username
+		flashSend("❌ Isi username", COLORS.red)
+		return
 	end
 
 	sendBtn.Text = "⏳ Sending..."
@@ -634,31 +656,12 @@ sendBtn.MouseLeave:Connect(function()
 end)
 
 -- ============================================================
--- AUTO-SEND LOOP
+-- REFRESH LOOP
 -- ============================================================
 task.spawn(function()
 	while screenGui.Parent do
 		refreshStatus()
-
-		if AUTO_SEND.ENABLED and (tick() - lastSendTime) >= AUTO_SEND.COOLDOWN then
-			local triggered, trig = checkAutoTrigger()
-			if triggered then
-				local target = getAutoTarget()
-				lastSendTime = tick()
-				pushLog(string.format("🔔 Trigger: %s x%d", trig.display, currentCounts[trig.display] or 0))
-
-				task.spawn(function()
-					local ok, msg = doSend(target)
-					if ok then
-						pushLog("✅ AUTO " .. msg)
-					else
-						pushLog("❌ AUTO gagal: " .. msg)
-					end
-				end)
-			end
-		end
-
-		task.wait(1)
+		task.wait(2)
 	end
 end)
 
@@ -676,13 +679,13 @@ minimizeBtn.MouseButton1Click:Connect(function()
 			Size = UDim2.new(0, FRAME_WIDTH, 0, 30)
 		}):Play()
 		body.Visible = false
-		title.Text = "📨 Seed Sender (—)"
+		title.Text = "📨 Item Sender (—)"
 	else
 		TweenService:Create(frame, TweenInfo.new(0.2), {
 			Size = UDim2.new(0, FRAME_WIDTH, 0, savedSize)
 		}):Play()
 		body.Visible = true
-		title.Text = "📨 Seed Sender"
+		title.Text = "📨 Item Sender"
 	end
 end)
 
@@ -694,4 +697,4 @@ end)
 -- INIT
 -- ============================================================
 refreshStatus()
-pushLog("siap. auto-send: Briar≥1 / Spire≥5")
+pushLog("siap")
