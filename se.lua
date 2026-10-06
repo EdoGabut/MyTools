@@ -1,8 +1,8 @@
 -- ============================================================
--- Item Sender v11
--- - Header fixed: 0x8C 0x01 [UserID f64] 0x42 0x1C
--- - Category filter buttons
--- - Multi kategori: Seeds, Sprinklers, WateringCans, Trowels
+-- Item Sender v10
+-- - Pilih kategori (dropdown)
+-- - Tanpa log
+-- - Payload: header 0x05 0x42 0x1C (fixed opcode)
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -18,30 +18,35 @@ local remote = ReplicatedStorage:WaitForChild("SharedModules")
 
 -- ===== CONFIG =====
 local ITEMS = {
-	-- SEEDS
+	-- ===== SEEDS =====
 	{ display = "Gold",       lookup = "Gold Seed",       category = "Seeds" },
 	{ display = "Mega",       lookup = "Mega Seed",       category = "Seeds" },
 	{ display = "Rainbow",    lookup = "Rainbow Seed",    category = "Seeds" },
 	{ display = "Briar Rose", lookup = "Briar Rose Seed", category = "Seeds" },
 
-	-- SPRINKLERS
+	-- ===== SPRINKLERS =====
 	{ display = "Common Cider Sprinkler",    lookup = "Common Cider Sprinkler",    category = "Sprinklers" },
 	{ display = "Uncommon Cider Sprinkler",  lookup = "Uncommon Cider Sprinkler",  category = "Sprinklers" },
 	{ display = "Rare Cider Sprinkler",      lookup = "Rare Cider Sprinkler",      category = "Sprinklers" },
 	{ display = "Legendary Cider Sprinkler", lookup = "Legendary Cider Sprinkler", category = "Sprinklers" },
 	{ display = "Super Cider Sprinkler",     lookup = "Super Cider Sprinkler",     category = "Sprinklers" },
 
-	-- WATERING CANS
+	-- ===== WATERING CANS =====
 	{ display = "Cider Watering Can",       lookup = "Cider Watering Can",       category = "WateringCans" },
 	{ display = "Super Cider Watering Can", lookup = "Super Cider Watering Can", category = "WateringCans" },
 
-	-- TROWELS
-	{ display = "Trowel", lookup = "Trowel", category = "Trowels" },
+	-- ===== TROWELS =====
+	{ display = "Trowel",                   lookup = "Trowel",                   category = "Trowels" },
 }
 
--- ===== CATEGORY FILTER =====
-local CATEGORIES = { "All", "Seeds", "Sprinklers", "WateringCans", "Trowels" }
-local currentFilter = "All"
+-- Urutan kategori di dropdown (harus match dengan category di ITEMS)
+local CATEGORIES = { "Seeds", "Sprinklers", "WateringCans", "Trowels" }
+local CATEGORY_LABEL = {
+	Seeds        = "🌱 Seeds",
+	Sprinklers   = "💧 Sprinklers",
+	WateringCans = "🚿 Watering Cans",
+	Trowels      = "🛠 Trowels",
+}
 
 local USERNAME_PRESETS = { "krinjguy67", "andri21649", "notexd777" }
 
@@ -91,10 +96,11 @@ local function getUserIdFromUsername(username)
 end
 
 -- ===== PAYLOAD BUILDER =====
+local OPCODE = 0x42
+
 local function buildPayload(targetUserId, items)
 	local buf = buffer.create(2048)
 	local pos = 0
-
 	local function writeU8(n) buffer.writeu8(buf, pos, n); pos += 1 end
 	local function writeString(s)
 		writeU8(0x0B); writeU8(#s)
@@ -105,7 +111,7 @@ local function buildPayload(targetUserId, items)
 	-- Header
 	writeU8(0x8C); writeU8(0x01)
 	buffer.writef64(buf, pos, targetUserId); pos += 8
-	writeU8(0x42); writeU8(0x1C)
+	writeU8(0x05); writeU8(OPCODE); writeU8(0x1C)
 
 	-- Entries
 	for i, item in ipairs(items) do
@@ -116,7 +122,7 @@ local function buildPayload(targetUserId, items)
 		writeU8(0x00)
 	end
 
-	-- Terminator
+	-- Penutup array
 	writeU8(0x00); writeU8(0x00); writeU8(0x00)
 
 	local final = buffer.create(pos)
@@ -205,16 +211,15 @@ local COLORS = {
 	preset    = Color3.fromRGB(45, 45, 55),
 	presetHv  = Color3.fromRGB(60, 60, 72),
 	yellow    = Color3.fromRGB(230, 190, 120),
-	accent    = Color3.fromRGB(60, 130, 200),
-	accentHv  = Color3.fromRGB(80, 160, 230),
+	active    = Color3.fromRGB(60, 130, 200),
 }
 
 local function corner(p, r)
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = p
 end
 
-local FRAME_WIDTH = 250
-local FRAME_HEIGHT = 300  -- tambah tinggi buat category row
+local FRAME_WIDTH = 260
+local FRAME_HEIGHT = 320
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
@@ -260,7 +265,7 @@ UserInputService.InputChanged:Connect(function(input)
 	end
 end)
 
--- ===== TITLE BAR =====
+-- Title bar
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1, 0, 0, 30)
 titleBar.BackgroundColor3 = COLORS.header
@@ -309,7 +314,7 @@ end
 local minimizeBtn = makeTitleBtn(-54, COLORS.preset, "—")
 local closeBtn    = makeTitleBtn(-28, COLORS.red,    "×")
 
--- ===== BODY =====
+-- Body
 local body = Instance.new("Frame")
 body.Size = UDim2.new(1, -16, 1, -38)
 body.Position = UDim2.new(0, 8, 0, 34)
@@ -336,7 +341,7 @@ local uPad = Instance.new("UIPadding", userBox)
 uPad.PaddingLeft = UDim.new(0, 10)
 uPad.PaddingRight = UDim.new(0, 10)
 
--- ===== PRESET ROW =====
+-- Preset row
 local presetRow = Instance.new("Frame")
 presetRow.Size = UDim2.new(1, 0, 0, 22)
 presetRow.Position = UDim2.new(0, 0, 0, 36)
@@ -378,77 +383,69 @@ for i, uname in ipairs(USERNAME_PRESETS) do
 	end)
 end
 
--- ===== CATEGORY FILTER ROW =====
-local catRow = Instance.new("Frame")
-catRow.Size = UDim2.new(1, 0, 0, 24)
-catRow.Position = UDim2.new(0, 0, 0, 62)
-catRow.BackgroundTransparency = 1
-catRow.Parent = body
+-- ===== KATEGORI DROPDOWN =====
+local catLabel = Instance.new("TextLabel")
+catLabel.Size = UDim2.new(1, 0, 0, 14)
+catLabel.Position = UDim2.new(0, 0, 0, 62)
+catLabel.BackgroundTransparency = 1
+catLabel.Text = "📂 Kategori:"
+catLabel.TextColor3 = COLORS.textDim
+catLabel.Font = Enum.Font.GothamMedium
+catLabel.TextSize = 10
+catLabel.TextXAlignment = Enum.TextXAlignment.Left
+catLabel.Parent = body
 
-local catLayout = Instance.new("UIListLayout")
-catLayout.FillDirection = Enum.FillDirection.Horizontal
-catLayout.Padding = UDim.new(0, 3)
-catLayout.SortOrder = Enum.SortOrder.LayoutOrder
-catLayout.Parent = catRow
+local catBtn = Instance.new("TextButton")
+catBtn.Size = UDim2.new(1, 0, 0, 28)
+catBtn.Position = UDim2.new(0, 0, 0, 78)
+catBtn.BackgroundColor3 = COLORS.input
+catBtn.Text = "🌱 Seeds  ▾"
+catBtn.TextColor3 = COLORS.text
+catBtn.Font = Enum.Font.GothamMedium
+catBtn.TextSize = 11
+catBtn.TextXAlignment = Enum.TextXAlignment.Left
+catBtn.BorderSizePixel = 0
+catBtn.AutoButtonColor = false
+catBtn.Parent = body
+corner(catBtn, 6)
+local catPad = Instance.new("UIPadding", catBtn)
+catPad.PaddingLeft = UDim.new(0, 10)
+catPad.PaddingRight = UDim.new(0, 10)
 
-local catButtons = {}
+-- Dropdown list (muncul saat diklik)
+local catList = Instance.new("Frame")
+catList.Size = UDim2.new(1, 0, 0, 0)
+catList.Position = UDim2.new(0, 0, 0, 108)
+catList.BackgroundColor3 = COLORS.header
+catList.BorderSizePixel = 0
+catList.Visible = false
+catList.ZIndex = 50
+catList.Parent = body
+corner(catList, 6)
 
-local function setCategoryFilter(cat)
-	currentFilter = cat
-	for c, btn in pairs(catButtons) do
-		if c == cat then
-			btn.BackgroundColor3 = COLORS.accent
-			btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-		else
-			btn.BackgroundColor3 = COLORS.preset
-			btn.TextColor3 = COLORS.textDim
-		end
-	end
-	-- refresh UI biar cuma tampil item yang match
-	if refreshStatus then refreshStatus() end
-end
+local catListLayout = Instance.new("UIListLayout")
+catListLayout.FillDirection = Enum.FillDirection.Vertical
+catListLayout.Padding = UDim.new(0, 2)
+catListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+catListLayout.Parent = catList
 
-for i, cat in ipairs(CATEGORIES) do
-	local cBtn = Instance.new("TextButton")
-	cBtn.Size = UDim2.new(0, 0, 1, 0)
-	cBtn.AutomaticSize = Enum.AutomaticSize.X
-	cBtn.BackgroundColor3 = (cat == currentFilter) and COLORS.accent or COLORS.preset
-	cBtn.Text = cat
-	cBtn.TextColor3 = (cat == currentFilter) and Color3.fromRGB(255, 255, 255) or COLORS.textDim
-	cBtn.Font = Enum.Font.GothamBold
-	cBtn.TextSize = 9
-	cBtn.BorderSizePixel = 0
-	cBtn.AutoButtonColor = false
-	cBtn.LayoutOrder = i
-	cBtn.Parent = catRow
-	corner(cBtn, 5)
-	local pad = Instance.new("UIPadding", cBtn)
-	pad.PaddingLeft = UDim.new(0, 6)
-	pad.PaddingRight = UDim.new(0, 6)
+local catListPad = Instance.new("UIPadding", catList)
+catListPad.PaddingLeft = UDim.new(0, 4)
+catListPad.PaddingRight = UDim.new(0, 4)
+catListPad.PaddingTop = UDim.new(0, 4)
+catListPad.PaddingBottom = UDim.new(0, 4)
 
-	catButtons[cat] = cBtn
+-- State
+local selectedCategory = "Seeds"
+local dropdownOpen = false
 
-	cBtn.MouseButton1Click:Connect(function()
-		setCategoryFilter(cat)
-	end)
-	cBtn.MouseEnter:Connect(function()
-		if cat ~= currentFilter then
-			cBtn.BackgroundColor3 = COLORS.presetHv
-			cBtn.TextColor3 = COLORS.text
-		end
-	end)
-	cBtn.MouseLeave:Connect(function()
-		if cat ~= currentFilter then
-			cBtn.BackgroundColor3 = COLORS.preset
-			cBtn.TextColor3 = COLORS.textDim
-		end
-	end)
-end
+-- Item rows per kategori (dibuat nanti, di-update saat kategori berubah)
+local infoScroll -- deklarasikan dulu
 
 -- ===== INFO ITEM =====
 local infoFrame = Instance.new("Frame")
 infoFrame.Size = UDim2.new(1, 0, 0, 130)
-infoFrame.Position = UDim2.new(0, 0, 0, 90)
+infoFrame.Position = UDim2.new(0, 0, 0, 112)
 infoFrame.BackgroundColor3 = COLORS.header
 infoFrame.BorderSizePixel = 0
 infoFrame.Parent = body
@@ -470,7 +467,7 @@ infoHeader.TextSize = 10
 infoHeader.TextXAlignment = Enum.TextXAlignment.Left
 infoHeader.Parent = infoFrame
 
-local infoScroll = Instance.new("ScrollingFrame")
+infoScroll = Instance.new("ScrollingFrame")
 infoScroll.Size = UDim2.new(1, 0, 1, -16)
 infoScroll.Position = UDim2.new(0, 0, 0, 16)
 infoScroll.BackgroundTransparency = 1
@@ -505,9 +502,11 @@ corner(sendBtn, 8)
 -- ============================================================
 -- STATE
 -- ============================================================
-local currentCounts = {}
-local infoRows = {}
+local currentCounts = {}   -- [display] = count
+local infoRows = {}        -- [display] = TextLabel
+local activeCategory = "Seeds"
 
+-- Buat row untuk semua item (di-hide/show sesuai kategori)
 for i, item in ipairs(ITEMS) do
 	local lbl = Instance.new("TextLabel")
 	lbl.Size = UDim2.new(1, 0, 0, 14)
@@ -525,42 +524,119 @@ for i, item in ipairs(ITEMS) do
 	infoRows[item.display] = lbl
 end
 
-function refreshStatus()
+local function getItemsByCategory(cat)
+	local list = {}
+	for _, item in ipairs(ITEMS) do
+		if item.category == cat then
+			table.insert(list, item)
+		end
+	end
+	return list
+end
+
+local function refreshStatus()
 	local combined = scanAll()
 	local totalJenis = 0
 
+	-- Update semua count dulu
 	for _, item in ipairs(ITEMS) do
-		local count = lookupCount(combined, item.lookup)
-		currentCounts[item.display] = count
+		currentCounts[item.display] = lookupCount(combined, item.lookup)
+	end
 
+	-- Tampilkan hanya item dari kategori aktif
+	for _, item in ipairs(ITEMS) do
 		local row = infoRows[item.display]
 		if row then
-			-- filter kategori
-			local show = true
-			if currentFilter ~= "All" and item.category ~= currentFilter then
-				show = false
-			end
-
-			if count > 0 and show then
-				row.Visible = true
-				row.Text = string.format("  • %s x%d", item.display, count)
-				row.TextColor3 = COLORS.green
-				totalJenis += 1
+			if item.category == activeCategory then
+				local count = currentCounts[item.display] or 0
+				if count > 0 then
+					row.Visible = true
+					row.Text = string.format("  • %s x%d", item.display, count)
+					row.TextColor3 = COLORS.green
+					totalJenis += 1
+				else
+					row.Visible = true
+					row.Text = string.format("  • %s x0", item.display)
+					row.TextColor3 = COLORS.disabled
+				end
 			else
 				row.Visible = false
 			end
 		end
 	end
 
-	local suffix = (currentFilter == "All") and "" or (" [" .. currentFilter .. "]")
 	if totalJenis == 0 then
-		infoHeader.Text = "📦 Siap dikirim: (kosong)" .. suffix
+		infoHeader.Text = string.format("📦 %s: (kosong)", CATEGORY_LABEL[activeCategory] or activeCategory)
 		infoHeader.TextColor3 = COLORS.disabled
 	else
-		infoHeader.Text = string.format("📦 Siap dikirim: %d jenis%s", totalJenis, suffix)
+		infoHeader.Text = string.format("📦 %s: %d jenis", CATEGORY_LABEL[activeCategory] or activeCategory, totalJenis)
 		infoHeader.TextColor3 = COLORS.textDim
 	end
 end
+
+-- ============================================================
+-- DROPDOWN LOGIC
+-- ============================================================
+local function closeDropdown()
+	dropdownOpen = false
+	catList.Visible = false
+end
+
+local function openDropdown()
+	dropdownOpen = true
+	catList.Visible = true
+	-- Update tinggi list sesuai jumlah kategori
+	local h = #CATEGORIES * 26 + 8
+	catList.Size = UDim2.new(1, 0, 0, h)
+end
+
+-- Buat tombol per kategori di dropdown
+for i, cat in ipairs(CATEGORIES) do
+	local optBtn = Instance.new("TextButton")
+	optBtn.Size = UDim2.new(1, 0, 0, 24)
+	optBtn.BackgroundColor3 = COLORS.preset
+	optBtn.Text = CATEGORY_LABEL[cat] or cat
+	optBtn.TextColor3 = COLORS.text
+	optBtn.Font = Enum.Font.GothamMedium
+	optBtn.TextSize = 11
+	optBtn.TextXAlignment = Enum.TextXAlignment.Left
+	optBtn.BorderSizePixel = 0
+	optBtn.AutoButtonColor = false
+	optBtn.LayoutOrder = i
+	optBtn.ZIndex = 51
+	optBtn.Parent = catList
+	corner(optBtn, 4)
+	local pad = Instance.new("UIPadding", optBtn)
+	pad.PaddingLeft = UDim.new(0, 10)
+	pad.PaddingRight = UDim.new(0, 10)
+
+	optBtn.MouseButton1Click:Connect(function()
+		activeCategory = cat
+		catBtn.Text = (CATEGORY_LABEL[cat] or cat) .. "  ▾"
+		closeDropdown()
+		refreshStatus()
+	end)
+	optBtn.MouseEnter:Connect(function()
+		optBtn.BackgroundColor3 = COLORS.presetHv
+	end)
+	optBtn.MouseLeave:Connect(function()
+		optBtn.BackgroundColor3 = COLORS.preset
+	end)
+end
+
+catBtn.MouseButton1Click:Connect(function()
+	if dropdownOpen then
+		closeDropdown()
+	else
+		openDropdown()
+	end
+end)
+catBtn.MouseEnter:Connect(function()
+	catBtn.BackgroundColor3 = COLORS.presetHv
+end)
+catBtn.MouseLeave:Connect(function()
+	catBtn.BackgroundColor3 = COLORS.input
+end)
 
 -- ============================================================
 -- SEND LOGIC
@@ -577,10 +653,9 @@ end
 local function collectSendItems()
 	local items = {}
 	for _, item in ipairs(ITEMS) do
-		local count = currentCounts[item.display] or 0
-		if count > 0 then
-			-- filter kategori
-			if currentFilter == "All" or item.category == currentFilter then
+		if item.category == activeCategory then
+			local count = currentCounts[item.display] or 0
+			if count > 0 then
 				table.insert(items, {
 					name = item.lookup,
 					count = math.min(count, 255),
@@ -599,12 +674,12 @@ local function doSend(username)
 
 	local items = collectSendItems()
 	if #items == 0 then
-		return false, "gak ada item"
+		return false, "gak ada item di " .. activeCategory
 	end
 
 	local targetId = getUserIdFromUsername(username)
 	if not targetId then
-		return false, "user '" .. username .. "' gak ketemu"
+		return false, "user gak ketemu"
 	end
 
 	local payload = buildPayload(targetId, items)
@@ -620,11 +695,11 @@ local function doSend(username)
 		return false, "fire fail"
 	end
 
-	return true, string.format("%d item → %s", #items, username)
+	return true, string.format("%d item", #items)
 end
 
 -- ============================================================
--- SEND BUTTON
+-- MANUAL SEND
 -- ============================================================
 sendBtn.MouseButton1Click:Connect(function()
 	refreshStatus()
