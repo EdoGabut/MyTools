@@ -1,9 +1,10 @@
 -- ============================================================
--- SIMPLE: MALAM FIRE 2x | SIANG WALK + E 2x | FARM SELALU JALAN
+-- FARM PUMPKIN + MONSTER + GUARD + NIGHT/DAY CYCLE
 -- ============================================================
 local Players            = game:GetService("Players")
 local RunService         = game:GetService("RunService")
 local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local TweenService       = game:GetService("TweenService")
 local VirtualInputManager= game:GetService("VirtualInputManager")
 local VirtualUser        = game:GetService("VirtualUser")
 local UserInputService   = game:GetService("UserInputService")
@@ -15,33 +16,14 @@ local player = Players.LocalPlayer
 -- CONFIG
 -- ============================================================
 local CONFIG = {
-    -- Waktu
-    NIGHT_START = 18,
-    NIGHT_END   = 6,
-
-    -- Remote
-    PACKET_STRING   = "\195\0009\nBriar Rose",
-    FIRE_TIMES      = 2,
-    FIRE_GAP        = 1,
-
-    -- Walk + E
-    TARGET_PATH     = { "WitchCauldron", "WitchCauldron", "WitchCauldron", "Part4" },
-    ARRIVE_DISTANCE = 2,
-    WALK_SPEED      = 20,
-    WALK_TIMEOUT    = 45,
-
-    WATER_FOLDER_PATH = { "WitchCauldron", "WitchCauldron", "WitchCauldron", "Water" },
-    E_TIMES         = 2,
-    E_GAP           = 1,
-    E_HOLD          = 0.1,
-
-    -- Farm
+    -- ===== Auto Farm =====
     MONSTER_FOLDER = "Workspace.MonsterVisuals",
     PUMPKIN_FOLDER = "Workspace.Pumpkins",
     SEEDPACK_PATH  = "Workspace.Map.SeedPackSpawnServerLocations",
     MONSTER_RANGE  = 10,
     PUMPKIN_RANGE  = 8,
-    FARM_WALK_SPEED    = 30,
+    WALK_SPEED         = 30,
+    CYCLE_WALK_SPEED   = 20,
     ATTACK_COOLDOWN    = 0.12,
     RETARGET_INTERVAL  = 0.1,
     SEARCH_INTERVAL    = 0.3,
@@ -53,7 +35,7 @@ local CONFIG = {
     SEEDPACK_TRIGGERED_TTL  = 1.5,
     SEEDPACK_BETTER_MARGIN  = 10,
 
-    -- Fox Guard
+    -- ===== Fox Guard =====
     FOX_MODELS_PATH    = "game.Workspace._PetVisualClient.Models",
     FOX_NAME_FILTER    = "VampireFox",
     FOX_MIN_DIST       = 0,
@@ -61,6 +43,44 @@ local CONFIG = {
     FOX_CLICK_COOLDOWN = 0.05,
     FOX_SCAN_ACTIVE    = 0.05,
     FOX_SCAN_IDLE      = 0.20,
+    GUARD_ENABLED      = true,
+
+    -- ===== Cycle =====
+    NIGHT_START = 18,
+    NIGHT_END   = 6,
+    PACKET_STRING   = "\195\0009\nBriar Rose",
+
+    TARGET_PATH     = { "WitchCauldron", "WitchCauldron", "WitchCauldron", "Part4" },
+    WATER_FOLDER_PATH = { "WitchCauldron", "WitchCauldron", "WitchCauldron", "Water" },
+    ARRIVE_DISTANCE = 2,
+    WALK_TIMEOUT    = 45,
+    E_TIMES         = 2,
+    E_GAP           = 1,
+    E_HOLD          = 0.1,
+
+    -- ===== GUI Kill =====
+    KILL_GUI_NAME = "WitchCauldron",
+
+    -- ===== Clear Map =====
+    CLEAR_MAP = {
+        DELETE_CHILDREN = {
+            "Workspace.Map.Middle",
+            "Workspace.Map.Stands",
+            "Workspace.NPCS",
+            "Workspace.ExplorerStand",
+            "Workspace.AuctionStand",
+        },
+        CLEAR_ALL_CHILDREN = {
+            "Workspace.Gardens",
+        },
+        DISABLE_COLLIDER = {
+            "Workspace.WitchCauldron",
+        },
+        ALWAYS_CLEAR_INTERVAL = 5,  -- tiap 5 detik clear WildPetSpawns
+    },
+    ALWAYS_CLEAR_CHILDREN = {
+        "Workspace.Map.WildPetSpawns",
+    },
 }
 
 -- ============================================================
@@ -68,9 +88,10 @@ local CONFIG = {
 -- ============================================================
 local running = false
 local stopFlag = false
-local busy = false             -- true saat fire/walk/E (farming pause)
-local lastPhase = nil          -- "night" / "day"
-local isRunning = false        -- state farming
+local busy = false
+local lastPhase = nil
+
+local isRunning = false
 local runToken = 0
 local activeHumanoid = nil
 local lastClickTime = 0
@@ -88,15 +109,6 @@ local foxInRange = 0
 -- ============================================================
 -- HELPERS
 -- ============================================================
-local function resolveArrayPath(path)
-    local current = workspace
-    for _, name in ipairs(path) do
-        if not current then return nil end
-        current = current:FindFirstChild(name)
-    end
-    return current
-end
-
 local function resolvePath(pathStr)
     if not pathStr or pathStr == "" then return nil end
     pathStr = pathStr:gsub("^%s+", ""):gsub("%s+$", "")
@@ -111,6 +123,15 @@ local function resolvePath(pathStr)
         else node = node:FindFirstChild(seg) end
     end
     return node
+end
+
+local function resolveArrayPath(path)
+    local current = workspace
+    for _, name in ipairs(path) do
+        if not current then return nil end
+        current = current:FindFirstChild(name)
+    end
+    return current
 end
 
 local function findRootPart(model)
@@ -150,20 +171,94 @@ local function isNight()
 end
 
 local function log(msg)
-    print("[Simple] " .. msg)
+    print("[Farm] " .. msg)
+end
+
+-- ============================================================
+-- CLEAR MAP
+-- ============================================================
+local function cmLog(msg)
+    print(string.format("[ClearMap %s] %s", os.date("%H:%M:%S"), msg))
+end
+
+local function cm_deleteChildren(path)
+    local t = resolvePath(path)
+    if not t then cmLog("✗ tidak ditemukan: " .. path); return end
+    local n = 0
+    for _, c in ipairs(t:GetChildren()) do
+        if pcall(function() c:Destroy() end) then n += 1 end
+    end
+    cmLog(string.format("✓ %s → hapus %d anak", path, n))
+end
+
+local function cm_clearAllChildren(path)
+    local t = resolvePath(path)
+    if not t then cmLog("✗ tidak ditemukan: " .. path); return end
+    local before = #t:GetChildren()
+    if pcall(function() t:ClearAllChildren() end) then
+        cmLog(string.format("✓ %s → ClearAllChildren (%d → 0)", path, before))
+    end
+end
+
+local function cm_disableCollider(path)
+    local t = resolvePath(path)
+    if not t then cmLog("✗ tidak ditemukan: " .. path); return end
+    local n = 0
+    local function disablePart(p)
+        if not p:IsA("BasePart") then return end
+        p.CanCollide = false
+        if p.CanTouch ~= nil then p.CanTouch = false end
+        if p.CanQuery ~= nil then p.CanQuery = false end
+        n += 1
+    end
+    disablePart(t)
+    for _, d in ipairs(t:GetDescendants()) do disablePart(d) end
+    cmLog(string.format("✓ %s → disable collider %d part", path, n))
+end
+
+local function runClearMapOnce()
+    cmLog("=====================================")
+    cmLog("START")
+    for _, p in ipairs(CONFIG.CLEAR_MAP.DELETE_CHILDREN) do cm_deleteChildren(p) end
+    for _, p in ipairs(CONFIG.CLEAR_MAP.CLEAR_ALL_CHILDREN) do cm_clearAllChildren(p) end
+    for _, p in ipairs(CONFIG.CLEAR_MAP.DISABLE_COLLIDER) do cm_disableCollider(p) end
+    cmLog("SELESAI")
+end
+
+local function runAlwaysClear()
+    while running and not stopFlag do
+        for _, p in ipairs(CONFIG.ALWAYS_CLEAR_CHILDREN) do
+            local t = resolvePath(p)
+            if t then
+                for _, c in ipairs(t:GetChildren()) do
+                    pcall(function() c:Destroy() end)
+                end
+            end
+        end
+        task.wait(CONFIG.CLEAR_MAP.ALWAYS_CLEAR_INTERVAL)
+    end
 end
 
 -- ============================================================
 -- INPUT
 -- ============================================================
-local function tapE()
+local function pressE()
     pcall(function()
         VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
     end)
-    task.wait(CONFIG.E_HOLD)
+end
+
+local function releaseE()
     pcall(function()
         VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
     end)
+end
+
+local function tapE(holdTime)
+    holdTime = holdTime or CONFIG.E_HOLD
+    pressE()
+    task.wait(holdTime)
+    releaseE()
 end
 
 local function clickLMB()
@@ -188,28 +283,7 @@ local function clickLMB()
 end
 
 -- ============================================================
--- FIRE REMOTE
--- ============================================================
-local function fireRemote()
-    local remote = ReplicatedStorage
-        :WaitForChild("SharedModules")
-        :WaitForChild("Packet")
-        :WaitForChild("RemoteEvent")
-    local ok, err = pcall(function()
-        local args = { buffer.fromstring(CONFIG.PACKET_STRING) }
-        remote:FireServer(unpack(args))
-    end)
-    if ok then
-        log("📦 Fire OK")
-        return true
-    else
-        log("❌ Fire gagal: " .. tostring(err))
-        return false
-    end
-end
-
--- ============================================================
--- SEEDPACK + FARM (dari script lama)
+-- SEEDPACK
 -- ============================================================
 local function getSeedPackPrompts()
     local folder = resolvePath(CONFIG.SEEDPACK_PATH)
@@ -248,7 +322,7 @@ local function triggerSeedPack(prompt)
         prompt.ClickablePrompt = false
         prompt.MaxActivationDistance = 30
     end)
-    tapE()
+    tapE(0.07)
     return true
 end
 
@@ -315,7 +389,7 @@ local function runSeedPackMode(hum, root, myToken, isRunningFn)
 end
 
 -- ============================================================
--- FARM LOOP
+-- FARM MODE
 -- ============================================================
 local function findNearestMonster(monsterFolder, myPos)
     local nearest, nearestRp, nearestDist = nil, nil, math.huge
@@ -422,6 +496,9 @@ local function runFarmMode(hum, root, monsterFolder, pumpkinFolder, myToken, isR
     end
 end
 
+-- ============================================================
+-- MAIN FARM LOOP
+-- ============================================================
 local function startSpeedKeeper()
     speedLoopToken += 1
     local myToken = speedLoopToken
@@ -430,8 +507,8 @@ local function startSpeedKeeper()
             local char = player.Character
             if char then
                 local hum = char:FindFirstChildOfClass("Humanoid")
-                if hum and hum.WalkSpeed ~= CONFIG.FARM_WALK_SPEED then
-                    pcall(function() hum.WalkSpeed = CONFIG.FARM_WALK_SPEED end)
+                if hum and hum.WalkSpeed ~= CONFIG.WALK_SPEED then
+                    pcall(function() hum.WalkSpeed = CONFIG.WALK_SPEED end)
                 end
             end
             task.wait(0.1)
@@ -446,14 +523,17 @@ end
 local function mainFarmLoop()
     local monsterFolder = resolvePath(CONFIG.MONSTER_FOLDER)
     local pumpkinFolder = resolvePath(CONFIG.PUMPKIN_FOLDER)
-    if not monsterFolder and not pumpkinFolder then return end
+    if not monsterFolder and not pumpkinFolder then
+        log("❌ Monster & Pumpkin folder tidak ditemukan")
+        return
+    end
 
     local char = player.Character or player.CharacterAdded:Wait()
     local hum = char:WaitForChild("Humanoid")
     local root = char:WaitForChild("HumanoidRootPart")
 
     hum.AutoRotate = true
-    hum.WalkSpeed = CONFIG.FARM_WALK_SPEED
+    hum.WalkSpeed = CONFIG.WALK_SPEED
     activeHumanoid = hum
 
     runToken += 1
@@ -506,10 +586,7 @@ end
 -- ============================================================
 local function scanFoxes(myPos)
     local container = resolvePath(CONFIG.FOX_MODELS_PATH)
-    if not container then
-        foxTotal, foxInRange = 0, 0
-        return
-    end
+    if not container then foxTotal, foxInRange = 0, 0 return end
     local near, cnt, tot = math.huge, 0, 0
     local minD, maxD = CONFIG.FOX_MIN_DIST, CONFIG.FOX_MAX_DIST
     local filter = CONFIG.FOX_NAME_FILTER:lower()
@@ -553,63 +630,29 @@ end
 
 local function stopFoxGuard()
     foxEnabled = false
-    if foxConn then
-        foxConn:Disconnect()
-        foxConn = nil
-    end
+    if foxConn then foxConn:Disconnect() foxConn = nil end
 end
 
 -- ============================================================
--- NIGHT ACTION: FIRE 2x
+-- FIRE REMOTE
 -- ============================================================
-local function doNightAction()
-    if busy then return end
-    busy = true
-    log("🌙 MALAM → fire remote 2x")
-
-    -- pause farming: stop speed keeper biar speed ga dilawan, tapi farm loop pause via flag busy
-    stopSpeedKeeper()
-
-    for i = 1, CONFIG.FIRE_TIMES do
-        if stopFlag then break end
-        log("Fire #" .. i)
-        fireRemote()
-        if i < CONFIG.FIRE_TIMES then
-            task.wait(CONFIG.FIRE_GAP)
-        end
-    end
-
-    busy = false
-    log("✓ Night action selesai, lanjut farming")
-
-    -- hidupkan speed keeper lagi
-    if isRunning then startSpeedKeeper() end
-end
-
--- ============================================================
--- DAY ACTION: WALK + E 2x
--- ============================================================
-local function findPromptInWater()
-    local water = resolveArrayPath(CONFIG.WATER_FOLDER_PATH)
-    if not water then return nil end
-    for _, d in ipairs(water:GetDescendants()) do
-        if d:IsA("ProximityPrompt") then return d end
-    end
-    return nil
-end
-
-local function forcePrompt(prompt)
-    if not prompt then return end
-    pcall(function()
-        prompt.HoldDuration = 0
-        prompt.RequiresLineOfSight = false
-        prompt.Enabled = true
-        prompt.KeyboardKeyCode = Enum.KeyCode.E
-        prompt.ClickablePrompt = false
-        prompt.MaxActivationDistance = 30
+local function fireBriar()
+    local ok, err = pcall(function()
+        local args = { buffer.fromstring(CONFIG.PACKET_STRING) }
+        ReplicatedStorage
+            :WaitForChild("SharedModules")
+            :WaitForChild("Packet")
+            :WaitForChild("RemoteEvent")
+            :FireServer(unpack(args))
     end)
+    if ok then log("📦 Briar fired")
+    else log("❌ Fire gagal: " .. tostring(err)) end
+    return ok
 end
 
+-- ============================================================
+-- WALK KE PART4
+-- ============================================================
 local function walkToPart4()
     local target = resolveArrayPath(CONFIG.TARGET_PATH)
     if not target or not target:IsA("BasePart") then
@@ -652,7 +695,7 @@ local function walkToPart4()
             return
         end
 
-        h.WalkSpeed = CONFIG.WALK_SPEED
+        h.WalkSpeed = CONFIG.CYCLE_WALK_SPEED
         h:MoveTo(tgtPos)
     end)
 
@@ -662,6 +705,30 @@ local function walkToPart4()
     end
     if conn.Connected then conn:Disconnect() end
     return arrived
+end
+
+-- ============================================================
+-- PROMPT DI WATER (E 2x)
+-- ============================================================
+local function findPromptInWater()
+    local water = resolveArrayPath(CONFIG.WATER_FOLDER_PATH)
+    if not water then return nil end
+    for _, d in ipairs(water:GetDescendants()) do
+        if d:IsA("ProximityPrompt") then return d end
+    end
+    return nil
+end
+
+local function forcePrompt(prompt)
+    if not prompt then return end
+    pcall(function()
+        prompt.HoldDuration = 0
+        prompt.RequiresLineOfSight = false
+        prompt.Enabled = true
+        prompt.KeyboardKeyCode = Enum.KeyCode.E
+        prompt.ClickablePrompt = false
+        prompt.MaxActivationDistance = 30
+    end)
 end
 
 local function doDayAction()
@@ -675,29 +742,67 @@ local function doDayAction()
     if stopFlag then busy = false return end
 
     if ok then
-        log("✅ Sampai Part4 → E 2x")
+        log("✅ Sampai Part4 → E")
         task.wait(0.3)
         for i = 1, CONFIG.E_TIMES do
             if stopFlag then break end
             forcePrompt(findPromptInWater())
             log("E #" .. i)
             tapE()
-            if i < CONFIG.E_TIMES then
-                task.wait(CONFIG.E_GAP)
-            end
+            if i < CONFIG.E_TIMES then task.wait(CONFIG.E_GAP) end
         end
     else
         log("❌ Walk gagal")
     end
 
     busy = false
-    log("✓ Day action selesai, lanjut farming")
-
+    log("✓ Balik farming")
     if isRunning then startSpeedKeeper() end
 end
 
 -- ============================================================
--- PHASE WATCHER (Heartbeat)
+-- NIGHT ACTION
+-- ============================================================
+local function doNightAction()
+    if busy then return end
+    busy = true
+    log("🌙 MALAM → fire Briar")
+    fireBriar()
+    busy = false
+    log("✓ Balik farming")
+end
+
+-- ============================================================
+-- GUI KILLER
+-- ============================================================
+local function startGuiKiller()
+    local targetName = CONFIG.KILL_GUI_NAME
+
+    local function bindKill(target)
+        if not target then return end
+        target.Enabled = false
+        target:GetPropertyChangedSignal("Enabled"):Connect(function()
+            if target.Enabled then target.Enabled = false end
+        end)
+    end
+
+    task.spawn(function()
+        local target = player.PlayerGui:FindFirstChild(targetName)
+        if target then bindKill(target) end
+
+        player.PlayerGui.ChildAdded:Connect(function(child)
+            if child.Name == targetName then
+                task.wait(0.05)
+                bindKill(child)
+            end
+        end)
+    end)
+
+    log("🚫 GUI killer aktif: " .. targetName)
+end
+
+-- ============================================================
+-- PHASE WATCHER
 -- ============================================================
 local phaseConn = nil
 
@@ -720,10 +825,7 @@ local function startPhaseWatcher()
 end
 
 local function stopPhaseWatcher()
-    if phaseConn then
-        phaseConn:Disconnect()
-        phaseConn = nil
-    end
+    if phaseConn then phaseConn:Disconnect() phaseConn = nil end
 end
 
 -- ============================================================
@@ -738,9 +840,10 @@ local function startAll()
     startFarm()
     startFoxGuard()
     startPhaseWatcher()
+    task.spawn(runAlwaysClear)
 
     if _G.__SetToggle then _G.__SetToggle(true) end
-    log("▶ Started — farming + guard jalan, phase watcher aktif")
+    log("▶ START — farming + guard + cycle aktif")
 end
 
 local function stopAll()
@@ -750,11 +853,11 @@ local function stopAll()
     stopFarm()
     stopFoxGuard()
     if _G.__SetToggle then _G.__SetToggle(false) end
-    log("■ Stopped")
+    log("■ STOP")
 end
 
 -- ============================================================
--- GUI MINIMALIS (bulat)
+-- GUI: TOGGLE ON/OFF DI KANAN, NO DRAG, BISA CLOSE
 -- ============================================================
 local COLORS = {
     bg      = Color3.fromRGB(22, 22, 28),
@@ -772,23 +875,24 @@ local function corner(p, r)
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "SimpleNightDayFarm"
+screenGui.Name = "FarmToggle"
 screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
-local W, H = 80, 80
+local W, H = 100, 40
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, W, 0, H)
-frame.Position = UDim2.new(0, 20, 0, 200)
+-- KANAN LAYAR
+frame.Position = UDim2.new(1, -W - 12, 0.5, -H / 2)
 frame.BackgroundColor3 = COLORS.bg
-frame.BackgroundTransparency = 0.15
+frame.BackgroundTransparency = 0.1
 frame.BorderSizePixel = 0
-frame.Active = true
+frame.Active = false   -- NO DRAG
 frame.Parent = screenGui
-corner(frame, 40)
+corner(frame, 8)
 
 local stroke = Instance.new("UIStroke")
 stroke.Color = COLORS.stroke
@@ -796,53 +900,33 @@ stroke.Transparency = 0.3
 stroke.Thickness = 1.5
 stroke.Parent = frame
 
--- Drag
-local dragging, dragStart, startPos
-frame.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = frame.Position
-    end
-end)
-frame.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = false
-    end
-end)
-UserInputService.InputChanged:Connect(function(input)
-    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - dragStart
-        frame.Position = UDim2.new(
-            startPos.X.Scale, startPos.X.Offset + delta.X,
-            startPos.Y.Scale, startPos.Y.Offset + delta.Y
-        )
-    end
-end)
-
+-- Tombol toggle (kiri)
 local toggleBtn = Instance.new("TextButton")
-toggleBtn.Size = UDim2.new(1, -10, 1, -10)
-toggleBtn.Position = UDim2.new(0, 5, 0, 5)
+toggleBtn.Size = UDim2.new(1, -28, 1, -8)
+toggleBtn.Position = UDim2.new(0, 4, 0, 4)
 toggleBtn.BackgroundColor3 = COLORS.red
 toggleBtn.Text = "OFF"
 toggleBtn.TextColor3 = COLORS.text
 toggleBtn.Font = Enum.Font.GothamBold
-toggleBtn.TextSize = 16
+toggleBtn.TextSize = 14
 toggleBtn.BorderSizePixel = 0
 toggleBtn.AutoButtonColor = false
 toggleBtn.Parent = frame
-corner(toggleBtn, 36)
+corner(toggleBtn, 6)
 
-local statusDot = Instance.new("Frame")
-statusDot.Size = UDim2.new(0, 8, 0, 8)
-statusDot.Position = UDim2.new(1, -12, 0, 6)
-statusDot.BackgroundColor3 = COLORS.textDim
-statusDot.BorderSizePixel = 0
-statusDot.Parent = frame
-corner(statusDot, 4)
+-- Tombol close (kanan)
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 20, 1, -8)
+closeBtn.Position = UDim2.new(1, -24, 0, 4)
+closeBtn.BackgroundColor3 = COLORS.red
+closeBtn.Text = "×"
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 14
+closeBtn.BorderSizePixel = 0
+closeBtn.AutoButtonColor = false
+closeBtn.Parent = frame
+corner(closeBtn, 6)
 
 -- ============================================================
 -- UI HOOKS
@@ -852,12 +936,10 @@ _G.__SetToggle = function(on)
         toggleBtn.Text = "ON"
         toggleBtn.BackgroundColor3 = COLORS.green
         stroke.Color = COLORS.green
-        statusDot.BackgroundColor3 = COLORS.green
     else
         toggleBtn.Text = "OFF"
         toggleBtn.BackgroundColor3 = COLORS.red
         stroke.Color = COLORS.stroke
-        statusDot.BackgroundColor3 = COLORS.textDim
     end
 end
 
@@ -869,14 +951,19 @@ toggleBtn.MouseButton1Click:Connect(function()
     end
 end)
 
+closeBtn.MouseButton1Click:Connect(function()
+    stopAll()
+    screenGui:Destroy()
+end)
+
 player.CharacterAdded:Connect(function()
-    if running then
-        stopAll()
-    end
+    if running then stopAll() end
 end)
 
 -- ============================================================
 -- EXECUTE
 -- ============================================================
+runClearMapOnce()
+startGuiKiller()
 _G.__SetToggle(false)
-log("Loaded | toggle ON/OFF | Malam: fire 2x | Siang: walk+E | Farming selalu jalan")
+log("Loaded | toggle ON/OFF di kanan layar")
