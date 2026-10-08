@@ -1,15 +1,21 @@
 -- ============================================================
--- AUTO FARM + FOX GUARD (All-in-One)
--- 1 Slider: START = Auto Farm + Guard aktif
--- STOP   = Semua berhenti
+-- AUTO FARM + FOX GUARD + NIGHT CYCLE (ALL-IN-ONE)
+-- Alur:
+--  1) Cek malam → fire packet "Briar Rose"
+--  2) Timer 11 menit (farm + guard tetap jalan)
+--  3) Timer habis → STOP farm & guard → walk ke Part4
+--  4) Sampai → fireproximityprompt() ke CauldronPrompt
+--  5) Wait 3 detik
+--  6) Ulang dari step 1 (farm + guard hidup lagi)
 -- ============================================================
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
-local VirtualInputManager = game:GetService("VirtualInputManager")
-local VirtualUser = game:GetService("VirtualUser")
-local UserInputService = game:GetService("UserInputService")
+local Players            = game:GetService("Players")
+local RunService         = game:GetService("RunService")
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local TweenService       = game:GetService("TweenService")
+local VirtualInputManager= game:GetService("VirtualInputManager")
+local VirtualUser        = game:GetService("VirtualUser")
+local UserInputService   = game:GetService("UserInputService")
+local Lighting           = game:GetService("Lighting")
 
 local player = Players.LocalPlayer
 
@@ -17,7 +23,7 @@ local player = Players.LocalPlayer
 -- CONFIG
 -- ============================================================
 local CONFIG = {
-    -- Auto Farm
+    -- ===== Auto Farm =====
     MONSTER_FOLDER = "Workspace.MonsterVisuals",
     PUMPKIN_FOLDER = "Workspace.Pumpkins",
     SEEDPACK_PATH  = "Workspace.Map.SeedPackSpawnServerLocations",
@@ -46,20 +52,30 @@ local CONFIG = {
             "Workspace.Map.WildPetSpawns",
         },
         CLEAR_ALL_CHILDREN = { "Workspace.Gardens" },
-        DISABLE_COLLIDER = { "Workspace.WitchCauldron" },
+        DISABLE_COLLIDER   = { "Workspace.WitchCauldron" },
     },
 
-    -- Fox Guard
-    FOX_MODELS_PATH = "game.Workspace._PetVisualClient.Models",
-    FOX_NAME_FILTER = "VampireFox",
-    FOX_MIN_DIST    = 0,
-    FOX_MAX_DIST    = 10,
+    -- ===== Fox Guard =====
+    FOX_MODELS_PATH    = "game.Workspace._PetVisualClient.Models",
+    FOX_NAME_FILTER    = "VampireFox",
+    FOX_MIN_DIST       = 0,
+    FOX_MAX_DIST       = 10,
     FOX_CLICK_COOLDOWN = 0.05,
     FOX_SCAN_ACTIVE    = 0.05,
     FOX_SCAN_IDLE      = 0.20,
 
-    -- Runtime
-    GUARD_ENABLED = true,   -- bisa dimatikan via config
+    GUARD_ENABLED = true,
+
+    -- ===== Night Cycle =====
+    TARGET_PATH     = { "WitchCauldron", "WitchCauldron", "WitchCauldron", "Part4" },
+    PROMPT_PATH     = { "WitchCauldron", "WitchCauldron", "WitchCauldron", "Water", "CauldronPrompt" },
+    PACKET_STRING   = "\195\0009\nBriar Rose",
+    WAIT_AFTER_PACKET = 11 * 60,   -- 11 menit
+    WAIT_AFTER_PROMPT = 3,         -- 3 detik
+    ARRIVE_DISTANCE = 2,
+    FIRE_PROMPT_DELAY = 0.35,
+    WAIT_FOR_NIGHT = true,
+    NIGHT_POLL_TIME = 2,
 }
 
 -- ============================================================
@@ -72,7 +88,7 @@ local lastClickTime = 0
 local speedLoopToken = 0
 local moveToCancelToken = 0
 
--- Fox guard state
+-- Fox guard
 local foxEnabled = false
 local foxLastScan = 0
 local foxLastClick = 0
@@ -82,6 +98,11 @@ local foxInRange = 0
 local foxTotal = 0
 local foxClickCount = 0
 local foxIdleState = true
+
+-- Cycle
+local cycleRunning = false
+local cycleStopFlag = false
+local cycleNumber = 0
 
 -- ============================================================
 -- HELPERS
@@ -101,6 +122,15 @@ local function resolvePath(pathStr)
         else node = node:FindFirstChild(seg) end
     end
     return node
+end
+
+local function resolveArrayPath(path)
+    local current = workspace
+    for _, name in ipairs(path) do
+        if not current then return nil end
+        current = current:FindFirstChild(name)
+    end
+    return current
 end
 
 local function waitFolder(pathStr, timeout)
@@ -148,6 +178,11 @@ end
 local function getHumanoidRoot()
     local char = player.Character
     return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function isNight()
+    local t = Lighting.ClockTime
+    return t < 6 or t >= 18
 end
 
 -- ============================================================
@@ -559,7 +594,7 @@ local function runFarmMode(hum, root, monsterFolder, pumpkinFolder, myToken, isR
 end
 
 -- ============================================================
--- MOVE TO WITCHCAULDRON
+-- MOVE TO WITCHCAULDRON (manual button)
 -- ============================================================
 local function moveToWitchCauldron()
     moveToCancelToken += 1
@@ -617,7 +652,7 @@ local function moveToWitchCauldron()
 end
 
 -- ============================================================
--- MAIN LOOP
+-- MAIN FARM LOOP
 -- ============================================================
 local function mainLoop()
     local monsterFolder = waitFolder(CONFIG.MONSTER_FOLDER, 10)
@@ -726,6 +761,257 @@ local function stopFoxGuard()
 end
 
 -- ============================================================
+-- FARM + GUARD CONTROL (dipanggil cycle)
+-- ============================================================
+local function startFarmGuard()
+    if isRunning then return end
+    isRunning = true
+    moveToCancelToken += 1
+    startSpeedKeeper()
+    task.spawn(mainLoop)
+    if CONFIG.GUARD_ENABLED then startFoxGuard() end
+end
+
+local function stopFarmGuard()
+    isRunning = false
+    runToken += 1
+    releaseE()
+    local hum = activeHumanoid
+    activeHumanoid = nil
+    if hum and hum.Parent then
+        pcall(function()
+            hum:Move(Vector3.zero, false)
+            local root = hum.RootPart
+            if root then hum:MoveTo(root.Position) end
+        end)
+    end
+    stopFoxGuard()
+end
+
+-- ============================================================
+-- CYCLE FUNCTIONS
+-- ============================================================
+local function setCycleStatus(txt, color)
+    if _G.__CycleSetStatus then _G.__CycleSetStatus(txt, color) end
+    print("[Cycle] " .. txt)
+end
+
+local function setCycleTimer(txt)
+    if _G.__CycleSetTimer then _G.__CycleSetTimer(txt) end
+end
+
+local function firePacket()
+    local ok, err = pcall(function()
+        local args = { buffer.fromstring(CONFIG.PACKET_STRING) }
+        ReplicatedStorage
+            :WaitForChild("SharedModules")
+            :WaitForChild("Packet")
+            :WaitForChild("RemoteEvent")
+            :FireServer(unpack(args))
+    end)
+    if ok then
+        setCycleStatus("📦 Packet fired (Briar Rose)", Color3.fromRGB(150, 90, 220))
+        return true
+    else
+        setCycleStatus("❌ Packet gagal: " .. tostring(err), Color3.fromRGB(200, 70, 70))
+        return false
+    end
+end
+
+local function fireCauldronPrompt()
+    local prompt = resolveArrayPath(CONFIG.PROMPT_PATH)
+    if not prompt then
+        setCycleStatus("❌ CauldronPrompt tidak ditemukan", Color3.fromRGB(200, 70, 70))
+        return false
+    end
+    if not prompt:IsA("ProximityPrompt") then
+        setCycleStatus("❌ Bukan ProximityPrompt: " .. prompt.ClassName, Color3.fromRGB(200, 70, 70))
+        return false
+    end
+
+    if typeof(fireproximityprompt) == "function" then
+        local ok, err = pcall(function() fireproximityprompt(prompt) end)
+        if ok then
+            setCycleStatus("✨ Prompt fired (fireproximityprompt)", Color3.fromRGB(70, 180, 100))
+            return true
+        else
+            setCycleStatus("⚠️ fireproximityprompt gagal: " .. tostring(err), Color3.fromRGB(240, 190, 80))
+        end
+    end
+
+    local ok2, err2 = pcall(function()
+        prompt:InputHoldBegin()
+        task.wait(prompt.HoldDuration > 0 and prompt.HoldDuration or 0.05)
+        prompt:InputHoldEnd()
+    end)
+    if ok2 then
+        setCycleStatus("✨ Prompt fired (fallback)", Color3.fromRGB(70, 180, 100))
+        return true
+    else
+        setCycleStatus("❌ Prompt fallback gagal: " .. tostring(err2), Color3.fromRGB(200, 70, 70))
+        return false
+    end
+end
+
+-- walk blocking ke Part4, return true kalau sampai
+local function walkToPart4()
+    local target = resolveArrayPath(CONFIG.TARGET_PATH)
+    if not target or not target:IsA("BasePart") then
+        setCycleStatus("❌ Target Part4 tidak ditemukan", Color3.fromRGB(200, 70, 70))
+        return false
+    end
+
+    local char = player.Character
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+
+    setCycleStatus("🚶 Walking ke Cauldron...", Color3.fromRGB(150, 90, 220))
+
+    local arrived = false
+    local conn
+    conn = RunService.Heartbeat:Connect(function()
+        if cycleStopFlag then conn:Disconnect() return end
+
+        local c = player.Character
+        if not c then conn:Disconnect() return end
+        local h = c:FindFirstChildOfClass("Humanoid")
+        if not h then conn:Disconnect() return end
+        local root = c:FindFirstChild("HumanoidRootPart")
+        if not root then conn:Disconnect() return end
+
+        local tgt = resolveArrayPath(CONFIG.TARGET_PATH)
+        if not tgt then
+            setCycleStatus("⚠️ Target hilang saat jalan", Color3.fromRGB(240, 190, 80))
+            conn:Disconnect()
+            return
+        end
+
+        local myPos = root.Position
+        local tgtPos = tgt.Position
+        local flatDist = (Vector3.new(myPos.X, 0, myPos.Z) - Vector3.new(tgtPos.X, 0, tgtPos.Z)).Magnitude
+
+        if flatDist <= CONFIG.ARRIVE_DISTANCE then
+            arrived = true
+            pcall(function() h:MoveTo(root.Position) end)
+            conn:Disconnect()
+            return
+        end
+
+        h.WalkSpeed = CONFIG.WALK_SPEED
+        h:MoveTo(tgtPos)
+    end)
+
+    while not cycleStopFlag and not arrived do
+        task.wait(0.1)
+    end
+    if conn.Connected then conn:Disconnect() end
+    return arrived
+end
+
+local function waitCycle(seconds)
+    local endT = os.clock() + seconds
+    while not cycleStopFlag and os.clock() < endT do
+        local remain = math.max(0, endT - os.clock())
+        local m = math.floor(remain / 60)
+        local s = math.floor(remain % 60)
+        setCycleTimer(string.format("%02d:%02d", m, s))
+        task.wait(0.25)
+    end
+    setCycleTimer("--:--")
+    return not cycleStopFlag
+end
+
+-- ============================================================
+-- MAIN CYCLE (jalan paralel sama farming)
+-- ============================================================
+local function mainCycle()
+    cycleStopFlag = false
+    while cycleRunning and not cycleStopFlag do
+        cycleNumber += 1
+        setCycleStatus("=== Cycle #" .. cycleNumber .. " ===", Color3.fromRGB(235, 235, 240))
+
+        -- 1) Tunggu malam (farming tetap jalan)
+        if CONFIG.WAIT_FOR_NIGHT then
+            while cycleRunning and not cycleStopFlag and not isNight() do
+                setCycleStatus("☀️ Siang, nunggu malam (farm tetap jalan)...", Color3.fromRGB(240, 190, 80))
+                task.wait(CONFIG.NIGHT_POLL_TIME)
+            end
+        end
+        if not cycleRunning or cycleStopFlag then break end
+
+        -- 2) Fire packet kalau malam
+        if isNight() then
+            firePacket()
+        else
+            setCycleStatus("⚠️ Bukan malam, skip fire packet", Color3.fromRGB(240, 190, 80))
+        end
+
+        -- 3) Wait 11 menit (farming tetap jalan)
+        setCycleStatus("⏳ Nunggu 11 menit (farm tetap jalan)...", Color3.fromRGB(150, 90, 220))
+        if not waitCycle(CONFIG.WAIT_AFTER_PACKET) then break end
+
+        -- 4) STOP farm & guard
+        setCycleStatus("🛑 Timer habis, stop farm & guard...", Color3.fromRGB(240, 190, 80))
+        stopFarmGuard()
+
+        -- pastikan farming berhenti dulu
+        task.wait(0.4)
+
+        -- 5) Walk ke Part4
+        local okWalk = walkToPart4()
+        if not cycleRunning or cycleStopFlag then break end
+        if not okWalk then
+            setCycleStatus("❌ Walk gagal, balik ke cycle", Color3.fromRGB(200, 70, 70))
+            task.wait(2)
+            startFarmGuard()
+            continue
+        end
+
+        setCycleStatus("✅ Sampai di Part4!", Color3.fromRGB(70, 180, 100))
+        task.wait(CONFIG.FIRE_PROMPT_DELAY)
+
+        -- 6) Fire prompt
+        fireCauldronPrompt()
+
+        -- 7) Wait 3 detik
+        setCycleStatus("⏳ Nunggu 3 detik...", Color3.fromRGB(150, 90, 220))
+        if not waitCycle(CONFIG.WAIT_AFTER_PROMPT) then break end
+
+        -- 8) Hidupkan lagi farm & guard → balik ke step 1
+        setCycleStatus("▶ Lanjut cycle, hidupkan farm & guard...", Color3.fromRGB(70, 180, 100))
+        startFarmGuard()
+        task.wait(0.3)
+    end
+
+    setCycleStatus("⏹ Cycle stopped.", Color3.fromRGB(200, 70, 70))
+end
+
+local function startCycle()
+    if cycleRunning then return end
+    cycleRunning = true
+    cycleStopFlag = false
+    cycleNumber = 0
+
+    -- farming + guard start bareng
+    startFarmGuard()
+    task.spawn(mainCycle)
+
+    setToggleUI(true)
+    print("[AutoFarm+Cycle] START")
+end
+
+local function stopCycle()
+    cycleStopFlag = true
+    cycleRunning = false
+    stopFarmGuard()
+    setCycleTimer("--:--")
+    setCycleStatus("⏹ All stopped.", Color3.fromRGB(200, 70, 70))
+    setToggleUI(false)
+    print("[AutoFarm+Cycle] STOP")
+end
+
+-- ============================================================
 -- GUI
 -- ============================================================
 local COLORS = {
@@ -736,6 +1022,7 @@ local COLORS = {
     green     = Color3.fromRGB(80, 200, 120),
     greenHv   = Color3.fromRGB(100, 220, 140),
     red       = Color3.fromRGB(200, 70, 70),
+    redHv     = Color3.fromRGB(220, 90, 90),
     blue      = Color3.fromRGB(70, 130, 200),
     blueHv    = Color3.fromRGB(90, 150, 220),
     accentOff = Color3.fromRGB(60, 60, 72),
@@ -749,14 +1036,14 @@ local function corner(p, r)
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoFarmFoxGuard"
+screenGui.Name = "AutoFarmFoxGuardCycle"
 screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
-local FRAME_WIDTH = 190
-local FRAME_HEIGHT = 130
+local FRAME_WIDTH = 210
+local FRAME_HEIGHT = 200
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
@@ -818,7 +1105,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "🌾 Farm + 🦊 Guard"
+title.Text = "🌾🦊🌙 Farm + Guard + Cycle"
 title.TextColor3 = COLORS.text
 title.Font = Enum.Font.GothamBold
 title.TextSize = 11
@@ -844,9 +1131,9 @@ end
 local minimizeBtn = makeHeaderBtn(-42, COLORS.accentOff, "—")
 local closeBtn    = makeHeaderBtn(-21, COLORS.red, "×")
 
--- Status label
+-- Cycle status
 local statusLbl = Instance.new("TextLabel")
-statusLbl.Size = UDim2.new(1, -16, 0, 16)
+statusLbl.Size = UDim2.new(1, -16, 0, 14)
 statusLbl.Position = UDim2.new(0, 8, 0, 28)
 statusLbl.BackgroundTransparency = 1
 statusLbl.Text = "Status: OFF"
@@ -856,10 +1143,34 @@ statusLbl.TextSize = 10
 statusLbl.TextXAlignment = Enum.TextXAlignment.Left
 statusLbl.Parent = frame
 
--- ===== MAIN TOGGLE (SLIDER) =====
+-- Timer
+local timerLbl = Instance.new("TextLabel")
+timerLbl.Size = UDim2.new(1, -16, 0, 22)
+timerLbl.Position = UDim2.new(0, 8, 0, 44)
+timerLbl.BackgroundTransparency = 1
+timerLbl.Text = "--:--"
+timerLbl.TextColor3 = COLORS.text
+timerLbl.Font = Enum.Font.GothamBold
+timerLbl.TextSize = 18
+timerLbl.TextXAlignment = Enum.TextXAlignment.Left
+timerLbl.Parent = frame
+
+-- Clock
+local clockLbl = Instance.new("TextLabel")
+clockLbl.Size = UDim2.new(1, -16, 0, 12)
+clockLbl.Position = UDim2.new(0, 8, 0, 68)
+clockLbl.BackgroundTransparency = 1
+clockLbl.Text = "ClockTime: -"
+clockLbl.TextColor3 = COLORS.textDim
+clockLbl.Font = Enum.Font.Code
+clockLbl.TextSize = 10
+clockLbl.TextXAlignment = Enum.TextXAlignment.Left
+clockLbl.Parent = frame
+
+-- ===== MAIN TOGGLE =====
 local toggleBtn = Instance.new("TextButton")
 toggleBtn.Size = UDim2.new(1, -16, 0, 34)
-toggleBtn.Position = UDim2.new(0, 8, 0, 48)
+toggleBtn.Position = UDim2.new(0, 8, 0, 86)
 toggleBtn.BackgroundColor3 = COLORS.green
 toggleBtn.Text = "▶ START ALL"
 toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -873,7 +1184,7 @@ corner(toggleBtn, 8)
 -- ===== WITCH BUTTON =====
 local witchBtn = Instance.new("TextButton")
 witchBtn.Size = UDim2.new(1, -16, 0, 26)
-witchBtn.Position = UDim2.new(0, 8, 0, 88)
+witchBtn.Position = UDim2.new(0, 8, 0, 126)
 witchBtn.BackgroundColor3 = COLORS.blue
 witchBtn.Text = "⚗ WitchCauldron"
 witchBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -884,9 +1195,29 @@ witchBtn.AutoButtonColor = false
 witchBtn.Parent = frame
 corner(witchBtn, 8)
 
+-- Info small
+local infoLbl = Instance.new("TextLabel")
+infoLbl.Size = UDim2.new(1, -16, 0, 12)
+infoLbl.Position = UDim2.new(0, 8, 0, 158)
+infoLbl.BackgroundTransparency = 1
+infoLbl.Text = "Farm + Guard + Cycle 11m"
+infoLbl.TextColor3 = COLORS.textDim
+infoLbl.Font = Enum.Font.Code
+infoLbl.TextSize = 9
+infoLbl.TextXAlignment = Enum.TextXAlignment.Left
+infoLbl.Parent = frame
+
 -- ============================================================
--- START / STOP (GABUNGAN)
+-- UI HOOKS
 -- ============================================================
+_G.__CycleSetStatus = function(txt, color)
+    statusLbl.Text = txt
+    if color then statusLbl.TextColor3 = color end
+end
+_G.__CycleSetTimer = function(txt)
+    timerLbl.Text = txt
+end
+
 local function setToggleUI(on)
     if on then
         toggleBtn.Text = "■ STOP ALL"
@@ -903,64 +1234,26 @@ local function setToggleUI(on)
     end
 end
 
-local function startAll()
-    if isRunning then return end
-    isRunning = true
-    moveToCancelToken += 1
-    setToggleUI(true)
-    startSpeedKeeper()
-
-    -- Auto Farm
-    task.spawn(mainLoop)
-
-    -- Fox Guard (paralel)
-    if CONFIG.GUARD_ENABLED then
-        startFoxGuard()
-    end
-end
-
-local function stopAll()
-    isRunning = false
-    runToken += 1
-    releaseE()
-
-    local hum = activeHumanoid
-    activeHumanoid = nil
-    if hum and hum.Parent then
-        pcall(function()
-            hum:Move(Vector3.zero, false)
-            local root = hum.RootPart
-            if root then hum:MoveTo(root.Position) end
-        end)
-    end
-
-    stopFoxGuard()
-end
-
 toggleBtn.MouseButton1Click:Connect(function()
-    if isRunning then
-        stopAll()
-        setToggleUI(false)
-        print("[AutoFarm+Guard] STOP")
+    if cycleRunning then
+        stopCycle()
     else
-        foxClickCount = 0
-        startAll()
-        print("[AutoFarm+Guard] START | Farm ON | Guard ON")
+        startCycle()
     end
 end)
 
 toggleBtn.MouseEnter:Connect(function()
-    if not isRunning then
-        TweenService:Create(toggleBtn, TweenInfo.new(0.1), {
-            BackgroundColor3 = COLORS.greenHv
-        }):Play()
+    if not cycleRunning then
+        TweenService:Create(toggleBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.greenHv }):Play()
+    else
+        TweenService:Create(toggleBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.redHv }):Play()
     end
 end)
 toggleBtn.MouseLeave:Connect(function()
-    if not isRunning then
-        TweenService:Create(toggleBtn, TweenInfo.new(0.1), {
-            BackgroundColor3 = COLORS.green
-        }):Play()
+    if not cycleRunning then
+        TweenService:Create(toggleBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.green }):Play()
+    else
+        TweenService:Create(toggleBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.red }):Play()
     end
 end)
 
@@ -969,14 +1262,10 @@ witchBtn.MouseButton1Click:Connect(function()
 end)
 
 witchBtn.MouseEnter:Connect(function()
-    TweenService:Create(witchBtn, TweenInfo.new(0.1), {
-        BackgroundColor3 = COLORS.blueHv
-    }):Play()
+    TweenService:Create(witchBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.blueHv }):Play()
 end)
 witchBtn.MouseLeave:Connect(function()
-    TweenService:Create(witchBtn, TweenInfo.new(0.1), {
-        BackgroundColor3 = COLORS.blue
-    }):Play()
+    TweenService:Create(witchBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.blue }):Play()
 end)
 
 -- ============================================================
@@ -995,6 +1284,9 @@ minimizeBtn.MouseButton1Click:Connect(function()
         toggleBtn.Visible = false
         witchBtn.Visible = false
         statusLbl.Visible = false
+        timerLbl.Visible = false
+        clockLbl.Visible = false
+        infoLbl.Visible = false
     else
         TweenService:Create(frame, TweenInfo.new(0.2), {
             Size = UDim2.new(0, FRAME_WIDTH, 0, savedSize)
@@ -1002,19 +1294,32 @@ minimizeBtn.MouseButton1Click:Connect(function()
         toggleBtn.Visible = true
         witchBtn.Visible = true
         statusLbl.Visible = true
+        timerLbl.Visible = true
+        clockLbl.Visible = true
+        infoLbl.Visible = true
     end
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
-    stopAll()
+    stopCycle()
     stopSpeedKeeper()
     screenGui:Destroy()
 end)
 
 player.CharacterAdded:Connect(function()
-    if isRunning then
-        stopAll()
-        setToggleUI(false)
+    if cycleRunning then
+        stopCycle()
+    end
+end)
+
+-- ============================================================
+-- CLOCK UPDATER
+-- ============================================================
+task.spawn(function()
+    while screenGui.Parent do
+        local t = Lighting.ClockTime
+        clockLbl.Text = string.format("ClockTime: %.2f  (%s)", t, isNight() and "MALAM" or "SIANG")
+        task.wait(0.5)
     end
 end)
 
@@ -1023,4 +1328,4 @@ end)
 -- ============================================================
 runClearMap()
 setToggleUI(false)
-print("[AutoFarm+Guard] Loaded | 1 toggle buat semua")
+print("[AutoFarm+Guard+Cycle] Loaded | 1 toggle buat semua")
