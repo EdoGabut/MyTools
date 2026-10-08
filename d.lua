@@ -1,5 +1,12 @@
 -- ============================================================
--- AUTO FARM + FOX GUARD + "Ready" CYCLE (ALL-IN-ONE)
+-- AUTO FARM + FOX GUARD + BRIAR CYCLE (ALL-IN-ONE)
+-- Alur:
+--  1) Malam tiba → cek GUI WitchCauldron apakah ada label "Briar"
+--  2) Kalau ada → fire remote "Briar Rose"
+--  3) Tunggu BrewTimer.TextLabel == "Ready"
+--  4) Ready → STOP farm (Guard tetap jalan) → walk ke Part4
+--  5) Sampai → simulasi klik E 2x (jeda 1 detik)
+--  6) Hiraukan malam → hidupkan farm lagi → tunggu malam berikutnya
 -- ============================================================
 local Players            = game:GetService("Players")
 local RunService         = game:GetService("RunService")
@@ -57,27 +64,35 @@ local CONFIG = {
     FOX_CLICK_COOLDOWN = 0.05,
     FOX_SCAN_ACTIVE    = 0.05,
     FOX_SCAN_IDLE      = 0.20,
+    GUARD_ENABLED      = true,
 
-    GUARD_ENABLED = true,
+    -- ===== Brew Cycle =====
+    -- GUI cauldron yang di-scan (untuk cari "Briar")
+    BRIAR_GUI_PATHS = {
+        "game.Players.LocalPlayer.PlayerGui.WitchCauldron",
+        "Workspace.WitchCauldron",
+    },
+    BRIAR_KEYWORD    = "briar",       -- keyword (case-insensitive)
 
-    -- ===== Ready Cycle =====
-    READY_LABEL_PATH = "Workspace.WitchCauldron.WitchCauldron.WitchCauldron.Water.BrewTimer.TextLabel",
-    READY_TEXT       = "Ready",
+    TIMER_PATH       = "Workspace.WitchCauldron.WitchCauldron.WitchCauldron.Water.BrewTimer.TextLabel",
+    READY_TEXT       = "ready",
     READY_POLL_TIME  = 0.5,
 
-    -- ===== Cauldron / Prompt =====
     WATER_FOLDER_PATH = { "WitchCauldron", "WitchCauldron", "WitchCauldron", "Water" },
     E_HOLD_TIME       = 0.1,
+    DOUBLE_E_GAP      = 1.0,
 
     TARGET_PATH       = { "WitchCauldron", "WitchCauldron", "WitchCauldron", "Part4" },
     ARRIVE_DISTANCE   = 2,
     WALK_TIMEOUT      = 45,
 
-    -- ===== Remote packet =====
-    PACKET_STRING   = "\195\0009\nBriar Rose",
+    PACKET_STRING     = "\195\0009\nBriar Rose",
     WAIT_AFTER_PROMPT = 3,
-    WAIT_FOR_NIGHT    = true,
-    NIGHT_POLL_TIME   = 2,
+
+    -- Night check
+    NIGHT_START = 18,
+    NIGHT_END   = 6,
+    NIGHT_POLL_TIME = 1,
 }
 
 -- ============================================================
@@ -103,6 +118,10 @@ local foxIdleState = true
 local cycleRunning = false
 local cycleStopFlag = false
 local cycleNumber = 0
+
+-- Flag: fire packet sekali per malam
+local firedThisNight = false
+local lastNightState = nil
 
 -- ============================================================
 -- HELPERS
@@ -181,30 +200,49 @@ local function getHumanoidRoot()
 end
 
 local function isNight()
-    local t = Lighting.ClockTime
-    return t < 6 or t >= 18
+    local h = (Lighting.ClockTime or 12) % 24
+    return h >= CONFIG.NIGHT_START or h < CONFIG.NIGHT_END
 end
 
 -- ============================================================
--- READY LABEL
+-- BRIAR GUI CHECK
 -- ============================================================
-local function getReadyLabel()
-    local obj = resolvePath(CONFIG.READY_LABEL_PATH)
+local function hasBriarInGui()
+    for _, path in ipairs(CONFIG.BRIAR_GUI_PATHS) do
+        local root = resolvePath(path)
+        if root then
+            for _, obj in ipairs(root:GetDescendants()) do
+                if obj:IsA("TextLabel") then
+                    local text = (obj.Text or ""):lower()
+                    if text:find(CONFIG.BRIAR_KEYWORD, 1, true) then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- ============================================================
+-- TIMER / READY CHECK
+-- ============================================================
+local function getTimerLabel()
+    local obj = resolvePath(CONFIG.TIMER_PATH)
     if obj and (obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")) then
         return obj
     end
     return nil
 end
 
-local function isReady()
-    local lbl = getReadyLabel()
-    if not lbl then return false end
-    return lbl.Text:lower():find(CONFIG.READY_TEXT:lower(), 1, true) ~= nil
+local function getTimerText()
+    local lbl = getTimerLabel()
+    return lbl and lbl.Text or ""
 end
 
-local function getReadyText()
-    local lbl = getReadyLabel()
-    return lbl and lbl.Text or "?"
+local function isReady()
+    local t = getTimerText():lower()
+    return t:find(CONFIG.READY_TEXT, 1, true) ~= nil
 end
 
 -- ============================================================
@@ -299,6 +337,13 @@ local function releaseE()
     end)
 end
 
+local function tapE(holdTime)
+    holdTime = holdTime or CONFIG.E_HOLD_TIME
+    pressE()
+    task.wait(holdTime)
+    releaseE()
+end
+
 local function clickLMB()
     if pcall(function()
         VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 1)
@@ -362,9 +407,7 @@ local function triggerSeedPack(prompt)
         prompt.ClickablePrompt = false
         prompt.MaxActivationDistance = 30
     end)
-    pressE()
-    task.wait(0.07)
-    releaseE()
+    tapE(0.07)
     return true
 end
 
@@ -616,7 +659,7 @@ local function runFarmMode(hum, root, monsterFolder, pumpkinFolder, myToken, isR
 end
 
 -- ============================================================
--- MOVE TO WITCHCAULDRON (manual button)
+-- MANUAL MOVE TO WITCHCAULDRON
 -- ============================================================
 local function moveToWitchCauldron()
     moveToCancelToken += 1
@@ -630,24 +673,15 @@ local function moveToWitchCauldron()
 
     task.spawn(function()
         local cauldron = resolvePath(CONFIG.WITCH_CAULDRON_PATH)
-        if not cauldron then
-            warn("[MoveTo] WitchCauldron tidak ditemukan")
-            return
-        end
-
+        if not cauldron then return end
         local targetPart = findRootPart(cauldron) or (cauldron:IsA("BasePart") and cauldron) or nil
-        if not targetPart then
-            warn("[MoveTo] WitchCauldron tidak punya BasePart")
-            return
-        end
+        if not targetPart then return end
 
         local char = player.Character or player.CharacterAdded:Wait()
         local hum = char:WaitForChild("Humanoid")
         local root = char:WaitForChild("HumanoidRootPart")
 
         local t0 = tick()
-        local timeout = 30
-
         while myToken == moveToCancelToken do
             if not root.Parent or not hum.Parent then return end
             if hum.Health <= 0 then return end
@@ -658,12 +692,10 @@ local function moveToWitchCauldron()
 
             if dist <= CONFIG.WITCH_CAULDRON_STOP_DIST then
                 pcall(function() hum:MoveTo(root.Position) end)
-                print("[MoveTo] Sampai di WitchCauldron")
                 return
             end
-            if tick() - t0 > timeout then
+            if tick() - t0 > 30 then
                 pcall(function() hum:MoveTo(root.Position) end)
-                warn("[MoveTo] Timeout menuju WitchCauldron")
                 return
             end
 
@@ -681,10 +713,7 @@ local function mainLoop()
     local pumpkinFolder = waitFolder(CONFIG.PUMPKIN_FOLDER, 10)
     waitFolder(CONFIG.SEEDPACK_PATH, 5)
 
-    if not monsterFolder and not pumpkinFolder then
-        warn("[AutoFarm] Monster & Pumpkin folder tidak ditemukan")
-        return
-    end
+    if not monsterFolder and not pumpkinFolder then return end
 
     local char = player.Character or player.CharacterAdded:Wait()
     local hum = char:WaitForChild("Humanoid")
@@ -811,19 +840,34 @@ local function stopFarmGuard()
     stopSpeedKeeper()
 end
 
+-- Hentikan hanya farming, guard tetap hidup
+local function stopFarmOnly()
+    isRunning = false
+    runToken += 1
+    releaseE()
+    local hum = activeHumanoid
+    activeHumanoid = nil
+    if hum and hum.Parent then
+        pcall(function()
+            hum:Move(Vector3.zero, false)
+            local root = hum.RootPart
+            if root then hum:MoveTo(root.Position) end
+        end)
+    end
+    stopSpeedKeeper()
+end
+
 -- ============================================================
--- CYCLE FUNCTIONS
+-- CYCLE STATUS LOG
 -- ============================================================
-local function setCycleStatus(txt, color)
-    if _G.__CycleSetStatus then _G.__CycleSetStatus(txt, color) end
+local function setCycleStatus(txt)
     print("[Cycle] " .. txt)
 end
 
-local function setCycleTimer(txt)
-    if _G.__CycleSetTimer then _G.__CycleSetTimer(txt) end
-end
-
-local function firePacket()
+-- ============================================================
+-- FIRE PACKET
+-- ============================================================
+local function fireBriar()
     local ok, err = pcall(function()
         local args = { buffer.fromstring(CONFIG.PACKET_STRING) }
         ReplicatedStorage
@@ -833,21 +877,20 @@ local function firePacket()
             :FireServer(unpack(args))
     end)
     if ok then
-        setCycleStatus("📦 Packet fired (Briar Rose)", Color3.fromRGB(150, 90, 220))
+        setCycleStatus("📦 Briar Rose fired")
         return true
     else
-        setCycleStatus("❌ Packet gagal: " .. tostring(err), Color3.fromRGB(200, 70, 70))
+        setCycleStatus("❌ Packet gagal: " .. tostring(err))
         return false
     end
 end
 
 -- ============================================================
--- TRIGGER PROMPT DI FOLDER WATER (simulasi klik E)
+-- TRIGGER PROMPT DI FOLDER WATER (klik E 2x, jeda 1 detik)
 -- ============================================================
 local function findPromptInWater()
     local water = resolveArrayPath(CONFIG.WATER_FOLDER_PATH)
     if not water then return nil end
-    -- cari ProximityPrompt langsung / descendant
     for _, d in ipairs(water:GetDescendants()) do
         if d:IsA("ProximityPrompt") then
             return d
@@ -859,32 +902,44 @@ end
 local function triggerWaterPrompt()
     local water = resolveArrayPath(CONFIG.WATER_FOLDER_PATH)
     if not water then
-        setCycleStatus("❌ Folder Water tidak ditemukan", Color3.fromRGB(200, 70, 70))
+        setCycleStatus("❌ Folder Water gak ada")
         return false
     end
 
+    -- klik E pertama
     local prompt = findPromptInWater()
-    if not prompt then
-        setCycleStatus("❌ Prompt tidak ada di folder Water", Color3.fromRGB(200, 70, 70))
-        return false
+    if prompt then
+        pcall(function()
+            prompt.HoldDuration = 0
+            prompt.RequiresLineOfSight = false
+            prompt.Enabled = true
+            prompt.KeyboardKeyCode = Enum.KeyCode.E
+            prompt.ClickablePrompt = false
+            prompt.MaxActivationDistance = 30
+        end)
     end
+    tapE(CONFIG.E_HOLD_TIME)
+    setCycleStatus("E #1")
 
-    -- paksa prompt biar gampang ke-trigger
-    pcall(function()
-        prompt.HoldDuration = 0
-        prompt.RequiresLineOfSight = false
-        prompt.Enabled = true
-        prompt.KeyboardKeyCode = Enum.KeyCode.E
-        prompt.ClickablePrompt = false
-        prompt.MaxActivationDistance = 30
-    end)
+    -- jeda 1 detik
+    task.wait(CONFIG.DOUBLE_E_GAP)
+    if cycleStopFlag then return false end
 
-    -- simulasi klik E (sama seperti seedpack)
-    pressE()
-    task.wait(CONFIG.E_HOLD_TIME)
-    releaseE()
+    -- klik E kedua (re-fetch prompt)
+    prompt = findPromptInWater()
+    if prompt then
+        pcall(function()
+            prompt.HoldDuration = 0
+            prompt.RequiresLineOfSight = false
+            prompt.Enabled = true
+            prompt.KeyboardKeyCode = Enum.KeyCode.E
+            prompt.ClickablePrompt = false
+            prompt.MaxActivationDistance = 30
+        end)
+    end
+    tapE(CONFIG.E_HOLD_TIME)
+    setCycleStatus("E #2")
 
-    setCycleStatus("✨ Prompt Water fired (simulasi E)", Color3.fromRGB(70, 180, 100))
     return true
 end
 
@@ -894,7 +949,7 @@ end
 local function walkToPart4()
     local target = resolveArrayPath(CONFIG.TARGET_PATH)
     if not target or not target:IsA("BasePart") then
-        setCycleStatus("❌ Target Part4 tidak ditemukan", Color3.fromRGB(200, 70, 70))
+        setCycleStatus("❌ Part4 gak ada")
         return false
     end
 
@@ -903,7 +958,7 @@ local function walkToPart4()
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return false end
 
-    setCycleStatus("🚶 Walking ke Part4...", Color3.fromRGB(150, 90, 220))
+    setCycleStatus("🚶 Walking ke Part4...")
 
     local arrived = false
     local conn
@@ -924,11 +979,7 @@ local function walkToPart4()
         if not root then conn:Disconnect() return end
 
         local tgt = resolveArrayPath(CONFIG.TARGET_PATH)
-        if not tgt then
-            setCycleStatus("⚠️ Target hilang saat jalan", Color3.fromRGB(240, 190, 80))
-            conn:Disconnect()
-            return
-        end
+        if not tgt then conn:Disconnect() return end
 
         local myPos = root.Position
         local tgtPos = tgt.Position
@@ -950,90 +1001,103 @@ local function walkToPart4()
         task.wait(0.1)
     end
     if conn.Connected then conn:Disconnect() end
-
     return arrived
-end
-
-local function waitCycle(seconds)
-    local endT = os.clock() + seconds
-    while not cycleStopFlag and os.clock() < endT do
-        local remain = math.max(0, endT - os.clock())
-        local m = math.floor(remain / 60)
-        local s = math.floor(remain % 60)
-        setCycleTimer(string.format("%02d:%02d", m, s))
-        task.wait(0.25)
-    end
-    setCycleTimer("--:--")
-    return not cycleStopFlag
 end
 
 -- ============================================================
 -- MAIN CYCLE
+-- Alur:
+--   1) Tunggu malam + flag reset → cek Briar di GUI → fire
+--   2) Tunggu Ready
+--   3) Stop farm only → walk ke Part4
+--   4) E 2x jeda 1 detik
+--   5) Hiraukan malam → hidupkan farm lagi → tunggu malam berikutnya
 -- ============================================================
 local function mainCycle()
     cycleStopFlag = false
+    firedThisNight = false
+    lastNightState = nil
+
     while cycleRunning and not cycleStopFlag do
         cycleNumber += 1
-        setCycleStatus("=== Cycle #" .. cycleNumber .. " ===", Color3.fromRGB(235, 235, 240))
+        setCycleStatus("=== Cycle #" .. cycleNumber .. " ===")
 
-        -- 1) Tunggu TextLabel = "Ready" (farm + guard tetap jalan)
+        -- 1) Tunggu malam berikutnya
+        while cycleRunning and not cycleStopFlag and not isNight() do
+            setCycleStatus("☀️ Siang, tunggu malam...")
+            task.wait(CONFIG.NIGHT_POLL_TIME)
+        end
+        if not cycleRunning or cycleStopFlag then break end
+
+        setCycleStatus("🌙 Malam tiba")
+
+        -- 2) Fire packet (sekali per malam) — cek dulu ada Briar di GUI?
+        if not firedThisNight then
+            -- tunggu sebentar biar GUI update
+            task.wait(0.5)
+            if hasBriarInGui() then
+                setCycleStatus("✓ Briar ada di GUI → fire")
+                fireBriar()
+                firedThisNight = true
+            else
+                setCycleStatus("✗ Briar gak ada di GUI → skip fire")
+            end
+        end
+
+        -- 3) Tunggu Ready
         while cycleRunning and not cycleStopFlag and not isReady() do
-            setCycleStatus(
-                "⏳ Nunggu Ready... (label = " .. getReadyText() .. ")",
-                Color3.fromRGB(240, 190, 80)
-            )
+            setCycleStatus("⏳ Nunggu Ready (BrewTimer: " .. getTimerText() .. ")")
             task.wait(CONFIG.READY_POLL_TIME)
         end
         if not cycleRunning or cycleStopFlag then break end
 
-        setCycleStatus("✅ Ready terdeteksi!", Color3.fromRGB(70, 180, 100))
+        setCycleStatus("✅ Ready!")
 
-        -- 2) STOP farm & guard → fokus ke cauldron
-        setCycleStatus("🛑 Stop farm & guard...", Color3.fromRGB(240, 190, 80))
-        stopFarmGuard()
-        task.wait(0.5)
+        -- 4) Stop FARM ONLY (guard tetap jalan) → walk ke Part4
+        stopFarmOnly()
+        task.wait(0.4)
 
-        -- 3) Walk ke Part4
         local okWalk = walkToPart4()
         if not cycleRunning or cycleStopFlag then break end
+
         if not okWalk then
-            setCycleStatus("❌ Walk gagal, lanjut cycle", Color3.fromRGB(200, 70, 70))
-            startFarmGuard()
-            task.wait(2)
+            setCycleStatus("❌ Walk gagal")
         else
-            setCycleStatus("✅ Sampai di Part4!", Color3.fromRGB(70, 180, 100))
+            setCycleStatus("✅ Sampai Part4")
             task.wait(0.35)
 
-            -- 4) Trigger prompt di folder Water (simulasi klik E)
+            -- 5) Klik E 2x jeda 1 detik
             triggerWaterPrompt()
 
-            -- 5) Cek malam → kalau malam fire packet
-            if CONFIG.WAIT_FOR_NIGHT then
-                while cycleRunning and not cycleStopFlag and not isNight() do
-                    setCycleStatus("☀️ Siang, nunggu malam...", Color3.fromRGB(240, 190, 80))
-                    task.wait(CONFIG.NIGHT_POLL_TIME)
-                end
-            end
             if not cycleRunning or cycleStopFlag then break end
 
-            if isNight() then
-                firePacket()
-            else
-                setCycleStatus("⚠️ Bukan malam, skip packet", Color3.fromRGB(240, 190, 80))
+            -- 6) Wait 3 detik (hiraukan malam)
+            setCycleStatus("⏳ Wait " .. CONFIG.WAIT_AFTER_PROMPT .. "s")
+            local endT = os.clock() + CONFIG.WAIT_AFTER_PROMPT
+            while not cycleStopFlag and os.clock() < endT do
+                task.wait(0.2)
             end
-
-            -- 6) Wait 3 detik
-            setCycleStatus("⏳ Nunggu 3 detik...", Color3.fromRGB(150, 90, 220))
-            if not waitCycle(CONFIG.WAIT_AFTER_PROMPT) then break end
-
-            -- 7) Hidupkan farm + guard lagi
-            setCycleStatus("▶ Lanjut cycle, hidupkan farm & guard...", Color3.fromRGB(70, 180, 100))
-            startFarmGuard()
-            task.wait(0.3)
         end
+
+        -- 7) Hidupkan farm lagi → tunggu malam berikutnya
+        setCycleStatus("▶ Hidupkan farm, tunggu malam berikutnya...")
+        if not isRunning then
+            startFarmGuard()
+        end
+
+        -- reset flag malam HANYA saat transisi ke siang terjadi
+        -- biar ga fire 2x di malam yang sama
+        while cycleRunning and not cycleStopFlag and isNight() do
+            task.wait(1)
+        end
+        if not cycleRunning or cycleStopFlag then break end
+
+        -- sekarang siang → reset flag
+        firedThisNight = false
+        setCycleStatus("☀️ Siang → reset flag, tunggu malam berikutnya")
     end
 
-    setCycleStatus("⏹ Cycle stopped.", Color3.fromRGB(200, 70, 70))
+    setCycleStatus("⏹ Cycle stopped")
 end
 
 local function startCycle()
@@ -1045,7 +1109,7 @@ local function startCycle()
     startFarmGuard()
     task.spawn(mainCycle)
 
-    setToggleUI(true)
+    if _G.__SetToggle then _G.__SetToggle(true) end
     print("[AutoFarm+Cycle] START")
 end
 
@@ -1053,28 +1117,20 @@ local function stopCycle()
     cycleStopFlag = true
     cycleRunning = false
     stopFarmGuard()
-    setCycleTimer("--:--")
-    setCycleStatus("⏹ All stopped.", Color3.fromRGB(200, 70, 70))
-    setToggleUI(false)
+    if _G.__SetToggle then _G.__SetToggle(false) end
     print("[AutoFarm+Cycle] STOP")
 end
 
 -- ============================================================
--- GUI
+-- GUI MINIMALIS (mobile friendly)
 -- ============================================================
 local COLORS = {
-    bg        = Color3.fromRGB(22, 22, 28),
-    header    = Color3.fromRGB(16, 16, 20),
-    text      = Color3.fromRGB(235, 235, 240),
-    textDim   = Color3.fromRGB(140, 140, 155),
-    green     = Color3.fromRGB(80, 200, 120),
-    greenHv   = Color3.fromRGB(100, 220, 140),
-    red       = Color3.fromRGB(200, 70, 70),
-    redHv     = Color3.fromRGB(220, 90, 90),
-    blue      = Color3.fromRGB(70, 130, 200),
-    blueHv    = Color3.fromRGB(90, 150, 220),
-    accentOff = Color3.fromRGB(60, 60, 72),
-    stroke    = Color3.fromRGB(60, 60, 72),
+    bg      = Color3.fromRGB(22, 22, 28),
+    text    = Color3.fromRGB(235, 235, 240),
+    textDim = Color3.fromRGB(160, 160, 175),
+    green   = Color3.fromRGB(80, 200, 120),
+    red     = Color3.fromRGB(200, 70, 70),
+    stroke  = Color3.fromRGB(60, 60, 72),
 }
 
 local function corner(p, r)
@@ -1084,27 +1140,28 @@ local function corner(p, r)
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoFarmFoxGuardCycle"
+screenGui.Name = "FarmGuardMin"
 screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
-local FRAME_WIDTH = 220
-local FRAME_HEIGHT = 200
+local W, H = 80, 80
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
-frame.Position = UDim2.new(0, 12, 0, 60)
+frame.Size = UDim2.new(0, W, 0, H)
+frame.Position = UDim2.new(0, 20, 0, 200)
 frame.BackgroundColor3 = COLORS.bg
+frame.BackgroundTransparency = 0.15
 frame.BorderSizePixel = 0
 frame.Active = true
 frame.Parent = screenGui
-corner(frame, 10)
+corner(frame, 40)
 
 local stroke = Instance.new("UIStroke")
 stroke.Color = COLORS.stroke
-stroke.Transparency = 0.4
+stroke.Transparency = 0.3
+stroke.Thickness = 1.5
 stroke.Parent = frame
 
 -- Drag
@@ -1134,163 +1191,41 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- Header
-local header = Instance.new("Frame")
-header.Size = UDim2.new(1, 0, 0, 24)
-header.BackgroundColor3 = COLORS.header
-header.BorderSizePixel = 0
-header.Parent = frame
-corner(header, 10)
-
-local headerFix = Instance.new("Frame")
-headerFix.Size = UDim2.new(1, 0, 0, 8)
-headerFix.Position = UDim2.new(0, 0, 1, -8)
-headerFix.BackgroundColor3 = COLORS.header
-headerFix.BorderSizePixel = 0
-headerFix.Parent = header
-
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -60, 1, 0)
-title.Position = UDim2.new(0, 10, 0, 0)
-title.BackgroundTransparency = 1
-title.Text = "🌾🦊🌙 Farm + Guard + Ready"
-title.TextColor3 = COLORS.text
-title.Font = Enum.Font.GothamBold
-title.TextSize = 11
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = header
-
-local function makeHeaderBtn(xOffset, bg, txt)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(0, 18, 0, 18)
-    b.Position = UDim2.new(1, xOffset, 0, 3)
-    b.BackgroundColor3 = bg
-    b.Text = txt
-    b.TextColor3 = Color3.fromRGB(255, 255, 255)
-    b.Font = Enum.Font.GothamBold
-    b.TextSize = 12
-    b.BorderSizePixel = 0
-    b.AutoButtonColor = false
-    b.Parent = header
-    corner(b, 5)
-    return b
-end
-
-local minimizeBtn = makeHeaderBtn(-42, COLORS.accentOff, "—")
-local closeBtn    = makeHeaderBtn(-21, COLORS.red, "×")
-
--- Status
-local statusLbl = Instance.new("TextLabel")
-statusLbl.Size = UDim2.new(1, -16, 0, 14)
-statusLbl.Position = UDim2.new(0, 8, 0, 28)
-statusLbl.BackgroundTransparency = 1
-statusLbl.Text = "Status: OFF"
-statusLbl.TextColor3 = COLORS.textDim
-statusLbl.Font = Enum.Font.Code
-statusLbl.TextSize = 10
-statusLbl.TextXAlignment = Enum.TextXAlignment.Left
-statusLbl.Parent = frame
-
--- Timer
-local timerLbl = Instance.new("TextLabel")
-timerLbl.Size = UDim2.new(1, -16, 0, 22)
-timerLbl.Position = UDim2.new(0, 8, 0, 44)
-timerLbl.BackgroundTransparency = 1
-timerLbl.Text = "--:--"
-timerLbl.TextColor3 = COLORS.text
-timerLbl.Font = Enum.Font.GothamBold
-timerLbl.TextSize = 18
-timerLbl.TextXAlignment = Enum.TextXAlignment.Left
-timerLbl.Parent = frame
-
--- Ready label (nampilin isi TextLabel)
-local readyLbl = Instance.new("TextLabel")
-readyLbl.Size = UDim2.new(1, -16, 0, 12)
-readyLbl.Position = UDim2.new(0, 8, 0, 68)
-readyLbl.BackgroundTransparency = 1
-readyLbl.Text = "BrewTimer: -"
-readyLbl.TextColor3 = COLORS.textDim
-readyLbl.Font = Enum.Font.Code
-readyLbl.TextSize = 10
-readyLbl.TextXAlignment = Enum.TextXAlignment.Left
-readyLbl.Parent = frame
-
--- Clock
-local clockLbl = Instance.new("TextLabel")
-clockLbl.Size = UDim2.new(1, -16, 0, 12)
-clockLbl.Position = UDim2.new(0, 8, 0, 82)
-clockLbl.BackgroundTransparency = 1
-clockLbl.Text = "ClockTime: -"
-clockLbl.TextColor3 = COLORS.textDim
-clockLbl.Font = Enum.Font.Code
-clockLbl.TextSize = 10
-clockLbl.TextXAlignment = Enum.TextXAlignment.Left
-clockLbl.Parent = frame
-
--- MAIN TOGGLE
 local toggleBtn = Instance.new("TextButton")
-toggleBtn.Size = UDim2.new(1, -16, 0, 34)
-toggleBtn.Position = UDim2.new(0, 8, 0, 100)
-toggleBtn.BackgroundColor3 = COLORS.green
-toggleBtn.Text = "▶ START ALL"
-toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+toggleBtn.Size = UDim2.new(1, -10, 1, -10)
+toggleBtn.Position = UDim2.new(0, 5, 0, 5)
+toggleBtn.BackgroundColor3 = COLORS.red
+toggleBtn.Text = "OFF"
+toggleBtn.TextColor3 = COLORS.text
 toggleBtn.Font = Enum.Font.GothamBold
-toggleBtn.TextSize = 13
+toggleBtn.TextSize = 16
 toggleBtn.BorderSizePixel = 0
 toggleBtn.AutoButtonColor = false
 toggleBtn.Parent = frame
-corner(toggleBtn, 8)
+corner(toggleBtn, 36)
 
--- WITCH BUTTON
-local witchBtn = Instance.new("TextButton")
-witchBtn.Size = UDim2.new(1, -16, 0, 26)
-witchBtn.Position = UDim2.new(0, 8, 0, 140)
-witchBtn.BackgroundColor3 = COLORS.blue
-witchBtn.Text = "⚗ WitchCauldron"
-witchBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-witchBtn.Font = Enum.Font.GothamBold
-witchBtn.TextSize = 11
-witchBtn.BorderSizePixel = 0
-witchBtn.AutoButtonColor = false
-witchBtn.Parent = frame
-corner(witchBtn, 8)
-
--- Info
-local infoLbl = Instance.new("TextLabel")
-infoLbl.Size = UDim2.new(1, -16, 0, 12)
-infoLbl.Position = UDim2.new(0, 8, 0, 170)
-infoLbl.BackgroundTransparency = 1
-infoLbl.Text = "Farm + Guard + Ready Cycle"
-infoLbl.TextColor3 = COLORS.textDim
-infoLbl.Font = Enum.Font.Code
-infoLbl.TextSize = 9
-infoLbl.TextXAlignment = Enum.TextXAlignment.Left
-infoLbl.Parent = frame
+local statusDot = Instance.new("Frame")
+statusDot.Size = UDim2.new(0, 8, 0, 8)
+statusDot.Position = UDim2.new(1, -12, 0, 6)
+statusDot.BackgroundColor3 = COLORS.textDim
+statusDot.BorderSizePixel = 0
+statusDot.Parent = frame
+corner(statusDot, 4)
 
 -- ============================================================
 -- UI HOOKS
 -- ============================================================
-_G.__CycleSetStatus = function(txt, color)
-    statusLbl.Text = txt
-    if color then statusLbl.TextColor3 = color end
-end
-_G.__CycleSetTimer = function(txt)
-    timerLbl.Text = txt
-end
-
-function setToggleUI(on)
+_G.__SetToggle = function(on)
     if on then
-        toggleBtn.Text = "■ STOP ALL"
-        toggleBtn.BackgroundColor3 = COLORS.red
-        stroke.Color = COLORS.green
-        statusLbl.Text = "Status: 🟢 RUNNING"
-        statusLbl.TextColor3 = COLORS.green
-    else
-        toggleBtn.Text = "▶ START ALL"
+        toggleBtn.Text = "ON"
         toggleBtn.BackgroundColor3 = COLORS.green
+        stroke.Color = COLORS.green
+        statusDot.BackgroundColor3 = COLORS.green
+    else
+        toggleBtn.Text = "OFF"
+        toggleBtn.BackgroundColor3 = COLORS.red
         stroke.Color = COLORS.stroke
-        statusLbl.Text = "Status: 🔴 OFF"
-        statusLbl.TextColor3 = COLORS.textDim
+        statusDot.BackgroundColor3 = COLORS.textDim
     end
 end
 
@@ -1302,72 +1237,9 @@ toggleBtn.MouseButton1Click:Connect(function()
     end
 end)
 
-toggleBtn.MouseEnter:Connect(function()
-    if not cycleRunning then
-        TweenService:Create(toggleBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.greenHv }):Play()
-    else
-        TweenService:Create(toggleBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.redHv }):Play()
-    end
-end)
-toggleBtn.MouseLeave:Connect(function()
-    if not cycleRunning then
-        TweenService:Create(toggleBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.green }):Play()
-    else
-        TweenService:Create(toggleBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.red }):Play()
-    end
-end)
-
-witchBtn.MouseButton1Click:Connect(function()
-    moveToWitchCauldron()
-end)
-
-witchBtn.MouseEnter:Connect(function()
-    TweenService:Create(witchBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.blueHv }):Play()
-end)
-witchBtn.MouseLeave:Connect(function()
-    TweenService:Create(witchBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.blue }):Play()
-end)
-
 -- ============================================================
--- MINIMIZE / CLOSE
+-- CHARACTER RESET
 -- ============================================================
-local minimized = false
-local savedSize = FRAME_HEIGHT
-
-minimizeBtn.MouseButton1Click:Connect(function()
-    minimized = not minimized
-    if minimized then
-        savedSize = frame.Size.Y.Offset
-        TweenService:Create(frame, TweenInfo.new(0.2), {
-            Size = UDim2.new(0, FRAME_WIDTH, 0, 24)
-        }):Play()
-        toggleBtn.Visible = false
-        witchBtn.Visible = false
-        statusLbl.Visible = false
-        timerLbl.Visible = false
-        clockLbl.Visible = false
-        readyLbl.Visible = false
-        infoLbl.Visible = false
-    else
-        TweenService:Create(frame, TweenInfo.new(0.2), {
-            Size = UDim2.new(0, FRAME_WIDTH, 0, savedSize)
-        }):Play()
-        toggleBtn.Visible = true
-        witchBtn.Visible = true
-        statusLbl.Visible = true
-        timerLbl.Visible = true
-        clockLbl.Visible = true
-        readyLbl.Visible = true
-        infoLbl.Visible = true
-    end
-end)
-
-closeBtn.MouseButton1Click:Connect(function()
-    stopCycle()
-    stopSpeedKeeper()
-    screenGui:Destroy()
-end)
-
 player.CharacterAdded:Connect(function()
     if cycleRunning then
         stopCycle()
@@ -1375,20 +1247,8 @@ player.CharacterAdded:Connect(function()
 end)
 
 -- ============================================================
--- LIVE UPDATER
--- ============================================================
-task.spawn(function()
-    while screenGui.Parent do
-        local t = Lighting.ClockTime
-        clockLbl.Text = string.format("ClockTime: %.2f  (%s)", t, isNight() and "MALAM" or "SIANG")
-        readyLbl.Text = "BrewTimer: " .. getReadyText()
-        task.wait(0.5)
-    end
-end)
-
--- ============================================================
 -- EXECUTE
 -- ============================================================
 runClearMap()
-setToggleUI(false)
-print("[AutoFarm+Guard+ReadyCycle] Loaded | 1 toggle buat semua")
+_G.__SetToggle(false)
+print("[FarmGuardMin+BriarCycle] Loaded | 1 toggle ON/OFF")
