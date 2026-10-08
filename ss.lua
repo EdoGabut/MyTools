@@ -1,4 +1,4 @@
--- LocalScript: Auto Buy Gear + Seeds (Log Only)
+-- LocalScript: Auto Buy Gear + Seeds (Log Only) + Toggle Seeds
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
@@ -95,6 +95,7 @@ local C = {
 	text = Color3.fromRGB(220, 220, 225),
 	textDim = Color3.fromRGB(110, 110, 120),
 	green = Color3.fromRGB(80, 200, 120),
+	red = Color3.fromRGB(190, 65, 65),
 	stroke = Color3.fromRGB(48, 48, 56),
 	close = Color3.fromRGB(190, 65, 65),
 	min = Color3.fromRGB(220, 170, 60),
@@ -107,8 +108,8 @@ screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
-local FRAME_W = 200
-local FRAME_H = 30
+local FRAME_W = 220
+local FRAME_H = 62
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, FRAME_W, 0, FRAME_H)
@@ -126,9 +127,9 @@ stroke.Thickness = 1
 stroke.Transparency = 0.3
 stroke.Parent = frame
 
--- Title bar (merangkap header)
+-- Title bar
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -50, 1, 0)
+title.Size = UDim2.new(1, -50, 0, 26)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
 title.Text = "⚙️ Auto Buy (Log)"
@@ -138,10 +139,10 @@ title.TextSize = 11
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = frame
 
--- Dot indicator (status)
+-- Dot indicator (status gear - selalu ON)
 local dot = Instance.new("Frame")
 dot.Size = UDim2.new(0, 8, 0, 8)
-dot.Position = UDim2.new(1, -46, 0.5, -4)
+dot.Position = UDim2.new(1, -46, 0, 9)
 dot.BackgroundColor3 = C.green
 dot.BorderSizePixel = 0
 dot.Parent = frame
@@ -149,7 +150,7 @@ Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
 
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.new(0, 18, 0, 18)
-closeBtn.Position = UDim2.new(1, -24, 0.5, -9)
+closeBtn.Position = UDim2.new(1, -24, 0, 4)
 closeBtn.BackgroundColor3 = C.close
 closeBtn.Text = "×"
 closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -160,31 +161,47 @@ closeBtn.AutoButtonColor = false
 closeBtn.Parent = frame
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 4)
 
+-- Toggle SEED ON/OFF
+local seedToggle = Instance.new("TextButton")
+seedToggle.Size = UDim2.new(1, -16, 0, 26)
+seedToggle.Position = UDim2.new(0, 8, 0, 30)
+seedToggle.BackgroundColor3 = C.green
+seedToggle.Text = "🌱 SEED: ON"
+seedToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+seedToggle.Font = Enum.Font.GothamBold
+seedToggle.TextSize = 11
+seedToggle.BorderSizePixel = 0
+seedToggle.AutoButtonColor = false
+seedToggle.Parent = frame
+Instance.new("UICorner", seedToggle).CornerRadius = UDim.new(0, 6)
+
 -- ===== AUTO BUY =====
 local BUY_INTERVAL = 0.5
 local lastStock = {}  -- [key] = stok terakhir (biar tidak spam log)
 
-local function startAutoBuy(key, kind, stockPath, payloadBuilder)
+local seedEnabled = true   -- flag ON/OFF untuk seed
+
+local function startAutoBuy(key, kind, stockPath, payloadBuilder, isEnabledFn)
 	task.spawn(function()
 		while screenGui.Parent do
-			local label = resolvePath(stockPath)
-			local stock = parseStock(label)
+			if isEnabledFn() then
+				local label = resolvePath(stockPath)
+				local stock = parseStock(label)
 
-			if stock and stock > 0 then
-				local payload = payloadBuilder(key)
-				if payload then
-					local ok = pcall(function() remote:FireServer(payload) end)
-					if ok then
-						-- Log cuma kalau stok berubah dari sebelumnya (hindari spam)
-						if lastStock[key] ~= stock then
-							lastStock[key] = stock
-							logBought(kind, key, stock)
+				if stock and stock > 0 then
+					local payload = payloadBuilder(key)
+					if payload then
+						local ok = pcall(function() remote:FireServer(payload) end)
+						if ok then
+							if lastStock[key] ~= stock then
+								lastStock[key] = stock
+								logBought(kind, key, stock)
+							end
 						end
 					end
+				else
+					if stock == 0 then lastStock[key] = nil end
 				end
-			else
-				-- Reset cache kalau stok habis, biar log muncul lagi nanti
-				if stock == 0 then lastStock[key] = nil end
 			end
 
 			task.wait(BUY_INTERVAL)
@@ -198,15 +215,33 @@ print("[AutoBuy] Starting...")
 print(string.format("[AutoBuy] Gear: %d | Seeds: %d", #GEAR_LIST, #SEED_LIST))
 print("=====================================")
 
--- Gear
+-- Gear (selalu ON)
 for _, name in ipairs(GEAR_LIST) do
-	startAutoBuy(name, "GEAR", getGearStockPath(name), buildGearPayload)
+	startAutoBuy(name, "GEAR", getGearStockPath(name), buildGearPayload, function()
+		return true
+	end)
 end
 
--- Seeds
+-- Seeds (bisa di-toggle)
 for _, name in ipairs(SEED_LIST) do
-	startAutoBuy(name, "SEED", getSeedStockPath(name), buildSeedPayload)
+	startAutoBuy(name, "SEED", getSeedStockPath(name), buildSeedPayload, function()
+		return seedEnabled
+	end)
 end
+
+-- ===== TOGGLE LOGIC =====
+seedToggle.MouseButton1Click:Connect(function()
+	seedEnabled = not seedEnabled
+	if seedEnabled then
+		seedToggle.Text = "🌱 SEED: ON"
+		seedToggle.BackgroundColor3 = C.green
+		print("[AutoBuy] Seed auto-buy: ON")
+	else
+		seedToggle.Text = "🌱 SEED: OFF"
+		seedToggle.BackgroundColor3 = C.red
+		print("[AutoBuy] Seed auto-buy: OFF")
+	end
+end)
 
 -- ===== CLOSE =====
 closeBtn.MouseButton1Click:Connect(function()
@@ -214,4 +249,4 @@ closeBtn.MouseButton1Click:Connect(function()
 	print("[AutoBuy] Stopped.")
 end)
 
-print("[AutoBuy] Loaded | Aktif. Cek console buat log pembelian.")
+print("[AutoBuy] Loaded | Aktif. Klik toggle buat ON/OFF seed.")
