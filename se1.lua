@@ -1,13 +1,14 @@
 -- ============================================================
--- Seed Sender Minimalis v2
--- - Info seed ringkas (1 baris teks)
--- - Button SEND dengan auto payload (1-5 jenis)
--- - Username preset: krinjguy67, andri21649, notexd777
+-- Item Sender Minimalis v7
+-- - Pilih item via checkbox
+-- - Input jumlah custom per item
+-- - Tanpa preset username
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 
@@ -16,15 +17,33 @@ local remote = ReplicatedStorage:WaitForChild("SharedModules")
 	:WaitForChild("Packet"):WaitForChild("RemoteEvent")
 
 -- ===== CONFIG =====
-local SEEDS = {
-	{ display = "Spirethorn", lookup = "Spirethorn Seed" },
-	{ display = "Briar Rose", lookup = "Briar Rose Seed" },
-	{ display = "Gold",       lookup = "Gold Seed" },
-	{ display = "Mega",       lookup = "Mega Seed" },
-	{ display = "Rainbow",    lookup = "Rainbow Seed" },
+local ITEMS = {
+	-- ===== SEEDS =====
+	{ display = "Spirethorn",    name = "Spirethorn",    lookup = "Spirethorn Seed",    category = "Seeds" },
+	{ display = "Briar Rose",    name = "Briar Rose",    lookup = "Briar Rose Seed",    category = "Seeds" },
+	{ display = "Gold",          name = "Gold",          lookup = "Gold Seed",          category = "Seeds" },
+	{ display = "Mega",          name = "Mega",          lookup = "Mega Seed",          category = "Seeds" },
+	{ display = "Rainbow",       name = "Rainbow",       lookup = "Rainbow Seed",       category = "Seeds" },
+	{ display = "Great Pumpkin", name = "Great Pumpkin", lookup = "Great Pumpkin Seed", category = "Seeds" },
+	{ display = "Vampire Bloom", name = "Vampire Bloom", lookup = "Vampire Bloom Seed", category = "Seeds" },
+
+	-- ===== SPRINKLERS =====
+	{ display = "Common Cider Sprinkler",    name = "Common Cider Sprinkler",    lookup = "Common Cider Sprinkler",    category = "Sprinklers" },
+	{ display = "Uncommon Cider Sprinkler",  name = "Uncommon Cider Sprinkler",  lookup = "Uncommon Cider Sprinkler",  category = "Sprinklers" },
+	{ display = "Rare Cider Sprinkler",      name = "Rare Cider Sprinkler",      lookup = "Rare Cider Sprinkler",      category = "Sprinklers" },
+	{ display = "Legendary Cider Sprinkler", name = "Legendary Cider Sprinkler", lookup = "Legendary Cider Sprinkler", category = "Sprinklers" },
+	{ display = "Super Cider Sprinkler",     name = "Super Cider Sprinkler",     lookup = "Super Cider Sprinkler",     category = "Sprinklers" },
+
+	-- ===== WATERING CANS =====
+	{ display = "Cider Watering Can",        name = "Cider Watering Can",        lookup = "Cider Watering Can",        category = "WateringCans" },
+	{ display = "Super Cider Watering Can",  name = "Super Cider Watering Can",  lookup = "Super Cider Watering Can",  category = "WateringCans" },
 }
 
-local USERNAME_PRESETS = { "krinjguy67", "andri21649", "notexd777" }
+local CATEGORIES = {
+	{ name = "Seeds",        label = "🌱 Seeds" },
+	{ name = "Sprinklers",   label = "💧 Sprinklers" },
+	{ name = "WateringCans", label = "🚿 Watering" },
+}
 
 local HOTBAR_PATH   = { "BackpackGui", "Backpack", "Hotbar" }
 local BACKPACK_PATH = { "BackpackGui", "Backpack", "Inventory", "ScrollingFrame", "UIGridFrame" }
@@ -35,7 +54,7 @@ local TOOL_COUNT_LABEL = "ToolCount"
 local idCache = {}
 
 local function getUserIdFromUsername(username)
-	username = username:gsub("^%s+", ""):gsub("%s+$", "")
+	username = username:match("^%s*(.-)%s*$")
 	if username == "" then return nil end
 	if idCache[username] then return idCache[username] end
 
@@ -47,22 +66,16 @@ local function getUserIdFromUsername(username)
 		return result
 	end
 
-	local HttpService = game:GetService("HttpService")
 	local ok2, response = pcall(function()
 		return request({
 			Url = "https://users.roblox.com/v1/usernames/users",
 			Method = "POST",
 			Headers = { ["Content-Type"] = "application/json" },
-			Body = HttpService:JSONEncode({
-				usernames = { username },
-				excludeBannedUsers = false
-			})
+			Body = HttpService:JSONEncode({ usernames = { username }, excludeBannedUsers = false })
 		})
 	end)
 	if ok2 and response and response.StatusCode == 200 then
-		local ok3, data = pcall(function()
-			return HttpService:JSONDecode(response.Body)
-		end)
+		local ok3, data = pcall(function() return HttpService:JSONDecode(response.Body) end)
 		if ok3 and data and data.data and data.data[1] then
 			local uid = data.data[1].id
 			idCache[username] = uid
@@ -164,13 +177,9 @@ local function scanContainer(container)
 end
 
 local function scanAll()
-	local hotbarContainer = resolveFromPlayerGui(HOTBAR_PATH)
-	local backpackContainer = resolveFromPlayerGui(BACKPACK_PATH)
-	local hotbarMap = scanContainer(hotbarContainer)
-	local backpackMap = scanContainer(backpackContainer)
-
 	local combined = {}
-	for _, map in pairs({ hotbarMap, backpackMap }) do
+	for _, path in ipairs({ HOTBAR_PATH, BACKPACK_PATH }) do
+		local map = scanContainer(resolveFromPlayerGui(path))
 		for name, count in pairs(map) do
 			combined[name] = (combined[name] or 0) + count
 		end
@@ -180,44 +189,45 @@ end
 
 local function lookupCount(map, itemName)
 	if map[itemName] then return map[itemName] end
-	local target = itemName:lower():gsub("^%s+", ""):gsub("%s+$", "")
+	local target = itemName:lower():match("^%s*(.-)%s*$")
 	for name, count in pairs(map) do
-		local norm = name:lower():gsub("^%s+", ""):gsub("%s+$", "")
-		if norm == target then return count end
+		if name:lower():match("^%s*(.-)%s*$") == target then return count end
 	end
 	return 0
 end
 
 -- ============================================================
--- ===== BUILD GUI (MINIMALIS) =====
+-- ===== BUILD GUI =====
 -- ============================================================
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "SeedSenderMini"
+screenGui.Name = "ItemSenderMini"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
 local COLORS = {
-	bg        = Color3.fromRGB(22, 22, 28),
-	header    = Color3.fromRGB(16, 16, 20),
-	input     = Color3.fromRGB(15, 15, 20),
-	text      = Color3.fromRGB(235, 235, 240),
-	textDim   = Color3.fromRGB(140, 140, 155),
+	bg          = Color3.fromRGB(22, 22, 28),
+	header      = Color3.fromRGB(16, 16, 20),
+	input       = Color3.fromRGB(15, 15, 20),
+	text        = Color3.fromRGB(235, 235, 240),
+	textDim     = Color3.fromRGB(140, 140, 155),
 	placeholder = Color3.fromRGB(110, 110, 125),
-	green     = Color3.fromRGB(80, 200, 120),
-	greenHv   = Color3.fromRGB(100, 220, 140),
-	red       = Color3.fromRGB(200, 70, 70),
-	disabled  = Color3.fromRGB(60, 60, 70),
-	stroke    = Color3.fromRGB(60, 60, 72),
-	preset    = Color3.fromRGB(45, 45, 55),
-	presetHv  = Color3.fromRGB(60, 60, 72),
+	green       = Color3.fromRGB(80, 200, 120),
+	greenHv     = Color3.fromRGB(100, 220, 140),
+	red         = Color3.fromRGB(200, 70, 70),
+	disabled    = Color3.fromRGB(60, 60, 70),
+	stroke      = Color3.fromRGB(60, 60, 72),
+	active      = Color3.fromRGB(80, 130, 200),
+	inactive    = Color3.fromRGB(40, 40, 50),
+	row         = Color3.fromRGB(28, 28, 36),
+	rowHv       = Color3.fromRGB(36, 36, 46),
+	check       = Color3.fromRGB(80, 200, 120),
 }
 
 local function corner(p, r)
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = p
 end
 
-local FRAME_WIDTH = 250
-local FRAME_HEIGHT = 178
+local FRAME_WIDTH, FRAME_HEIGHT = 280, 380
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
@@ -233,7 +243,7 @@ stroke.Color = COLORS.stroke
 stroke.Transparency = 0.4
 stroke.Parent = frame
 
--- Drag (touch friendly)
+-- Drag
 local dragging, dragStart, startPos
 frame.InputBegan:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1
@@ -281,7 +291,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -50, 1, 0)
 title.Position = UDim2.new(0, 12, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "📨 Seed Sender"
+title.Text = "📨 Item Sender v7"
 title.TextColor3 = COLORS.text
 title.Font = Enum.Font.GothamBold
 title.TextSize = 12
@@ -310,13 +320,12 @@ body.Position = UDim2.new(0, 8, 0, 34)
 body.BackgroundTransparency = 1
 body.Parent = frame
 
--- ===== USERNAME INPUT =====
+-- USERNAME INPUT
 local userBox = Instance.new("TextBox")
 userBox.Size = UDim2.new(1, 0, 0, 32)
-userBox.Position = UDim2.new(0, 0, 0, 0)
 userBox.BackgroundColor3 = COLORS.input
 userBox.Text = ""
-userBox.PlaceholderText = "Username / ID"
+userBox.PlaceholderText = "Username / ID target"
 userBox.TextColor3 = COLORS.text
 userBox.PlaceholderColor3 = COLORS.placeholder
 userBox.Font = Enum.Font.GothamMedium
@@ -330,60 +339,32 @@ local uPad = Instance.new("UIPadding", userBox)
 uPad.PaddingLeft = UDim.new(0, 10)
 uPad.PaddingRight = UDim.new(0, 10)
 
--- ===== USERNAME PRESETS =====
-local presetRow = Instance.new("Frame")
-presetRow.Size = UDim2.new(1, 0, 0, 22)
-presetRow.Position = UDim2.new(0, 0, 0, 36)
-presetRow.BackgroundTransparency = 1
-presetRow.Parent = body
+-- CATEGORY TABS
+local catRow = Instance.new("Frame")
+catRow.Size = UDim2.new(1, 0, 0, 26)
+catRow.Position = UDim2.new(0, 0, 0, 38)
+catRow.BackgroundTransparency = 1
+catRow.Parent = body
 
-local presetLayout = Instance.new("UIListLayout")
-presetLayout.FillDirection = Enum.FillDirection.Horizontal
-presetLayout.Padding = UDim.new(0, 4)
-presetLayout.SortOrder = Enum.SortOrder.LayoutOrder
-presetLayout.Parent = presetRow
+local catLayout = Instance.new("UIListLayout")
+catLayout.FillDirection = Enum.FillDirection.Horizontal
+catLayout.Padding = UDim.new(0, 4)
+catLayout.SortOrder = Enum.SortOrder.LayoutOrder
+catLayout.Parent = catRow
 
-for i, uname in ipairs(USERNAME_PRESETS) do
-	local pBtn = Instance.new("TextButton")
-	pBtn.Size = UDim2.new(0, 0, 1, 0)
-	pBtn.AutomaticSize = Enum.AutomaticSize.X
-	pBtn.BackgroundColor3 = COLORS.preset
-	pBtn.Text = uname
-	pBtn.TextColor3 = COLORS.textDim
-	pBtn.Font = Enum.Font.GothamMedium
-	pBtn.TextSize = 10
-	pBtn.BorderSizePixel = 0
-	pBtn.AutoButtonColor = false
-	pBtn.LayoutOrder = i
-	pBtn.Parent = presetRow
-	corner(pBtn, 5)
-	local pad = Instance.new("UIPadding", pBtn)
-	pad.PaddingLeft = UDim.new(0, 8)
-	pad.PaddingRight = UDim.new(0, 8)
+local currentCategory = CATEGORIES[1].name
+local catButtons = {}
 
-	pBtn.MouseButton1Click:Connect(function()
-		userBox.Text = uname
-	end)
-	pBtn.MouseEnter:Connect(function()
-		pBtn.BackgroundColor3 = COLORS.presetHv
-		pBtn.TextColor3 = COLORS.text
-	end)
-	pBtn.MouseLeave:Connect(function()
-		pBtn.BackgroundColor3 = COLORS.preset
-		pBtn.TextColor3 = COLORS.textDim
-	end)
-end
-
--- ===== INFO SEED (1 BARIS RINGKAS) =====
+-- INFO LABEL
 local infoLbl = Instance.new("TextLabel")
-infoLbl.Size = UDim2.new(1, 0, 0, 26)
-infoLbl.Position = UDim2.new(0, 0, 0, 62)
+infoLbl.Size = UDim2.new(1, 0, 0, 22)
+infoLbl.Position = UDim2.new(0, 0, 0, 68)
 infoLbl.BackgroundColor3 = COLORS.header
 infoLbl.BorderSizePixel = 0
-infoLbl.Text = "🌱 Memuat..."
+infoLbl.Text = "Memuat..."
 infoLbl.TextColor3 = COLORS.textDim
 infoLbl.Font = Enum.Font.Code
-infoLbl.TextSize = 10
+infoLbl.TextSize = 9
 infoLbl.TextXAlignment = Enum.TextXAlignment.Left
 infoLbl.TextTruncate = Enum.TextTruncate.AtEnd
 infoLbl.Parent = body
@@ -392,7 +373,30 @@ local iPad = Instance.new("UIPadding", infoLbl)
 iPad.PaddingLeft = UDim.new(0, 8)
 iPad.PaddingRight = UDim.new(0, 8)
 
--- ===== SEND BUTTON =====
+-- ITEM LIST
+local listFrame = Instance.new("ScrollingFrame")
+listFrame.Size = UDim2.new(1, 0, 1, -168)
+listFrame.Position = UDim2.new(0, 0, 0, 94)
+listFrame.BackgroundColor3 = COLORS.header
+listFrame.BorderSizePixel = 0
+listFrame.ScrollBarThickness = 3
+listFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+listFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+listFrame.Parent = body
+corner(listFrame, 6)
+local lPad = Instance.new("UIPadding", listFrame)
+lPad.PaddingLeft = UDim.new(0, 4)
+lPad.PaddingRight = UDim.new(0, 4)
+lPad.PaddingTop = UDim.new(0, 4)
+lPad.PaddingBottom = UDim.new(0, 4)
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.FillDirection = Enum.FillDirection.Vertical
+listLayout.Padding = UDim.new(0, 2)
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Parent = listFrame
+
+-- SEND BUTTON
 local sendBtn = Instance.new("TextButton")
 sendBtn.Size = UDim2.new(1, 0, 0, 36)
 sendBtn.Position = UDim2.new(0, 0, 1, -36)
@@ -406,30 +410,228 @@ sendBtn.AutoButtonColor = false
 sendBtn.Parent = body
 corner(sendBtn, 8)
 
--- ===== STATE =====
-local currentCounts = {} -- [display] = count
+-- ============================================================
+-- ===== STATE & LOGIC =====
+-- ============================================================
+local cachedScan = {}       -- hasil scan terakhir
+local selectedItems = {}    -- [display] = { checked = bool, count = number }
+local rowRefs = {}          -- [display] = { row, checkbox, checkMark, countBox, stockLbl }
 
-local function refreshStatus()
-	local combined = scanAll()
+local function getItemsByCategory(cat)
+	local list = {}
+	for _, item in ipairs(ITEMS) do
+		if item.category == cat then table.insert(list, item) end
+	end
+	return list
+end
+
+-- Update info label dari item yang checked
+local function updateInfo()
 	local parts = {}
-	local totalJenis = 0
+	local total = 0
+	for _, item in ipairs(ITEMS) do
+		local s = selectedItems[item.display]
+		if s and s.checked and s.count > 0 then
+			total += 1
+			table.insert(parts, string.format("%s×%d", item.display, s.count))
+		end
+	end
+	if total == 0 then
+		infoLbl.Text = "Pilih item & isi jumlah"
+		infoLbl.TextColor3 = COLORS.disabled
+	else
+		infoLbl.Text = table.concat(parts, " · ")
+		infoLbl.TextColor3 = COLORS.green
+	end
+end
 
-	for _, seed in ipairs(SEEDS) do
-		local count = lookupCount(combined, seed.lookup)
-		currentCounts[seed.display] = count
-		if count > 0 then
-			totalJenis += 1
-			table.insert(parts, string.format("%s x%d", seed.display, count))
+-- Update stok untuk semua row (dari cache)
+local function updateStock()
+	for _, item in ipairs(ITEMS) do
+		local ref = rowRefs[item.display]
+		if ref then
+			local stock = lookupCount(cachedScan, item.lookup)
+			ref.stockLbl.Text = string.format("stok: %d", stock)
+			ref.stockLbl.TextColor3 = (stock > 0) and COLORS.textDim or COLORS.disabled
+		end
+	end
+end
+
+-- Buat 1 row item (checkbox + nama + stok + input jumlah)
+local function makeItemRow(item, layoutOrder)
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, 0, 0, 30)
+	row.BackgroundColor3 = COLORS.row
+	row.BorderSizePixel = 0
+	row.LayoutOrder = layoutOrder
+	row.Parent = listFrame
+	corner(row, 6)
+
+	-- Checkbox
+	local checkbox = Instance.new("TextButton")
+	checkbox.Size = UDim2.new(0, 18, 0, 18)
+	checkbox.Position = UDim2.new(0, 6, 0.5, -9)
+	checkbox.BackgroundColor3 = COLORS.inactive
+	checkbox.Text = ""
+	checkbox.BorderSizePixel = 0
+	checkbox.AutoButtonColor = false
+	checkbox.Parent = row
+	corner(checkbox, 4)
+
+	local checkMark = Instance.new("TextLabel")
+	checkMark.Size = UDim2.new(1, 0, 1, 0)
+	checkMark.BackgroundTransparency = 1
+	checkMark.Text = "✓"
+	checkMark.TextColor3 = Color3.fromRGB(255, 255, 255)
+	checkMark.Font = Enum.Font.GothamBold
+	checkMark.TextSize = 12
+	checkMark.TextTransparency = 1
+	checkMark.Parent = checkbox
+
+	-- Nama item
+	local nameLbl = Instance.new("TextLabel")
+	nameLbl.Size = UDim2.new(1, -150, 1, 0)
+	nameLbl.Position = UDim2.new(0, 30, 0, 0)
+	nameLbl.BackgroundTransparency = 1
+	nameLbl.Text = item.display
+	nameLbl.TextColor3 = COLORS.text
+	nameLbl.Font = Enum.Font.GothamMedium
+	nameLbl.TextSize = 10
+	nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+	nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+	nameLbl.Parent = row
+
+	-- Stok kecil
+	local stockLbl = Instance.new("TextLabel")
+	stockLbl.Size = UDim2.new(0, 80, 0, 10)
+	stockLbl.Position = UDim2.new(0, 30, 0, 18)
+	stockLbl.BackgroundTransparency = 1
+	stockLbl.Text = "stok: 0"
+	stockLbl.TextColor3 = COLORS.textDim
+	stockLbl.Font = Enum.Font.Code
+	stockLbl.TextSize = 8
+	stockLbl.TextXAlignment = Enum.TextXAlignment.Left
+	stockLbl.Parent = row
+
+	-- Input jumlah
+	local countBox = Instance.new("TextBox")
+	countBox.Size = UDim2.new(0, 60, 0, 22)
+	countBox.Position = UDim2.new(1, -66, 0.5, -11)
+	countBox.BackgroundColor3 = COLORS.input
+	countBox.Text = ""
+	countBox.PlaceholderText = "jml"
+	countBox.TextColor3 = COLORS.text
+	countBox.PlaceholderColor3 = COLORS.placeholder
+	countBox.Font = Enum.Font.Code
+	countBox.TextSize = 10
+	countBox.TextXAlignment = Enum.TextXAlignment.Center
+	countBox.ClearTextOnFocus = false
+	countBox.BorderSizePixel = 0
+	countBox.Parent = row
+	corner(countBox, 5)
+
+	-- State
+	selectedItems[item.display] = selectedItems[item.display] or { checked = false, count = 0 }
+
+	local function refreshRowVisual()
+		local s = selectedItems[item.display]
+		if s.checked then
+			checkbox.BackgroundColor3 = COLORS.check
+			checkMark.TextTransparency = 0
+			row.BackgroundColor3 = COLORS.rowHv
+		else
+			checkbox.BackgroundColor3 = COLORS.inactive
+			checkMark.TextTransparency = 1
+			row.BackgroundColor3 = COLORS.row
 		end
 	end
 
-	if totalJenis == 0 then
-		infoLbl.Text = "🌱 Tidak ada seed"
-		infoLbl.TextColor3 = COLORS.disabled
-	else
-		infoLbl.Text = "🌱 " .. table.concat(parts, " · ")
-		infoLbl.TextColor3 = COLORS.green
+	checkbox.MouseButton1Click:Connect(function()
+		local s = selectedItems[item.display]
+		s.checked = not s.checked
+		refreshRowVisual()
+		updateInfo()
+	end)
+
+	countBox:GetPropertyChangedSignal("Text"):Connect(function()
+		local num = tonumber(countBox.Text) or 0
+		if num < 0 then num = 0; countBox.Text = "0" end
+		if num > 255 then num = 255; countBox.Text = "255" end
+		selectedItems[item.display].count = num
+		-- auto-check kalau user isi angka
+		if num > 0 and not selectedItems[item.display].checked then
+			selectedItems[item.display].checked = true
+			refreshRowVisual()
+		end
+		updateInfo()
+	end)
+
+	-- klik row = toggle checkbox
+	row.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			-- biar tidak dobel kalau klik checkbox/countBox langsung
+			-- (mereka consume sendiri)
+		end
+	end)
+
+	rowRefs[item.display] = {
+		row = row,
+		checkbox = checkbox,
+		checkMark = checkMark,
+		countBox = countBox,
+		stockLbl = stockLbl,
+	}
+end
+
+local function buildRows()
+	-- hapus row lama
+	for _, child in ipairs(listFrame:GetChildren()) do
+		if child:IsA("Frame") then child:Destroy() end
 	end
+	rowRefs = {}
+
+	local items = getItemsByCategory(currentCategory)
+	for i, item in ipairs(items) do
+		makeItemRow(item, i)
+	end
+	updateStock()
+end
+
+local function refresh()
+	cachedScan = scanAll()
+	updateStock()
+end
+
+-- Buat tombol kategori
+for i, cat in ipairs(CATEGORIES) do
+	local cBtn = Instance.new("TextButton")
+	cBtn.Size = UDim2.new(0, 0, 1, 0)
+	cBtn.AutomaticSize = Enum.AutomaticSize.X
+	cBtn.BackgroundColor3 = (cat.name == currentCategory) and COLORS.active or COLORS.inactive
+	cBtn.Text = cat.label
+	cBtn.TextColor3 = COLORS.text
+	cBtn.Font = Enum.Font.GothamBold
+	cBtn.TextSize = 10
+	cBtn.BorderSizePixel = 0
+	cBtn.AutoButtonColor = false
+	cBtn.LayoutOrder = i
+	cBtn.Parent = catRow
+	corner(cBtn, 6)
+	local pad = Instance.new("UIPadding", cBtn)
+	pad.PaddingLeft = UDim.new(0, 8)
+	pad.PaddingRight = UDim.new(0, 8)
+
+	catButtons[cat.name] = cBtn
+
+	cBtn.MouseButton1Click:Connect(function()
+		if currentCategory == cat.name then return end
+		currentCategory = cat.name
+		for name, btn in pairs(catButtons) do
+			btn.BackgroundColor3 = (name == currentCategory) and COLORS.active or COLORS.inactive
+		end
+		buildRows()
+		task.spawn(refresh)
+	end)
 end
 
 -- ===== SEND ACTION =====
@@ -445,64 +647,80 @@ local function flashSend(text, color, duration)
 end
 
 sendBtn.MouseButton1Click:Connect(function()
-	refreshStatus()
+	refresh()
 
 	local sendItems = {}
-	for _, seed in ipairs(SEEDS) do
-		local count = currentCounts[seed.display] or 0
-		if count > 0 then
-			table.insert(sendItems, {
-				name = seed.display,
-				count = math.min(count, 255),
-			})
+	for _, item in ipairs(ITEMS) do
+		local s = selectedItems[item.display]
+		if s and s.checked and s.count > 0 then
+			local stock = lookupCount(cachedScan, item.lookup)
+			local sendCount = math.min(s.count, stock, 255)
+			if sendCount > 0 then
+				table.insert(sendItems, { name = item.name, count = sendCount })
+			end
 		end
 	end
 
 	if #sendItems == 0 then
-		flashSend("❌ Gak ada seed", COLORS.red)
+		flashSend("Pilih item & jumlah", COLORS.red)
 		return
 	end
 
 	local username = userBox.Text:gsub("%s", "")
 	if username == "" then
-		flashSend("❌ Isi username", COLORS.red)
+		flashSend("Isi username", COLORS.red)
 		return
 	end
 
-	sendBtn.Text = "⏳ Loading..."
+	sendBtn.Text = "Loading..."
 	sendBtn.Active = false
 
 	task.spawn(function()
 		local targetId = getUserIdFromUsername(username)
 		if not targetId then
-			flashSend("❌ User gak ketemu", COLORS.red)
+			flashSend("User gak ketemu", COLORS.red)
 			return
 		end
 
-		local payload
-		if #sendItems == 1 then
-			payload = buildSinglePayload(targetId, sendItems[1].name, sendItems[1].count, "Seeds")
-		else
-			payload = buildMultiPayload(targetId, sendItems, "Seeds")
+		-- Kelompokkan per kategori (payload pakai category)
+		local byCat = {}
+		for _, it in ipairs(sendItems) do
+			local itemDef
+			for _, d in ipairs(ITEMS) do
+				if d.name == it.name then itemDef = d; break end
+			end
+			local cat = itemDef and itemDef.category or "Seeds"
+			byCat[cat] = byCat[cat] or {}
+			table.insert(byCat[cat], it)
 		end
 
-		if not payload then
-			flashSend("❌ Payload fail", COLORS.red)
-			return
+		local sent = 0
+		local failed = false
+
+		for cat, items in pairs(byCat) do
+			local payload
+			if #items == 1 then
+				payload = buildSinglePayload(targetId, items[1].name, items[1].count, cat)
+			else
+				payload = buildMultiPayload(targetId, items, cat)
+			end
+
+			if payload then
+				local ok = pcall(function() remote:FireServer(payload) end)
+				if ok then sent += #items else failed = true end
+			else
+				failed = true
+			end
 		end
 
-		sendBtn.Text = string.format("⏳ Send %d...", #sendItems)
-
-		local ok = pcall(function()
-			remote:FireServer(payload)
-		end)
-
-		if ok then
-			flashSend(string.format("✅ %d jenis", #sendItems), COLORS.green, 2)
+		if sent > 0 then
+			flashSend(string.format("Terkirim %d item", sent), COLORS.green, 2)
 			task.wait(1.5)
-			refreshStatus()
+			refresh()
+		elseif failed then
+			flashSend("Fire fail", COLORS.red)
 		else
-			flashSend("❌ Fire fail", COLORS.red)
+			flashSend("Gagal", COLORS.red)
 		end
 	end)
 end)
@@ -518,17 +736,18 @@ sendBtn.MouseLeave:Connect(function()
 	end
 end)
 
--- ===== CLOSE =====
+-- CLOSE
 closeBtn.MouseButton1Click:Connect(function()
 	screenGui:Destroy()
 end)
 
 -- ===== INIT =====
-refreshStatus()
+buildRows()
+refresh()
 
 task.spawn(function()
 	while screenGui.Parent do
-		refreshStatus()
 		task.wait(2)
+		refresh()
 	end
 end)
