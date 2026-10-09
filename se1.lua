@@ -1,8 +1,7 @@
 -- ============================================================
--- Item Sender Minimalis v8
+-- Item Sender Minimalis v7
 -- - Pilih item via checkbox
--- - Input jumlah custom per item (max 65535)
--- - Support > 255 (pakai U16 little-endian)
+-- - Input jumlah custom per item
 -- - Tanpa preset username
 -- ============================================================
 local Players = game:GetService("Players")
@@ -51,9 +50,6 @@ local BACKPACK_PATH = { "BackpackGui", "Backpack", "Inventory", "ScrollingFrame"
 local TOOL_NAME_LABEL  = "ToolName"
 local TOOL_COUNT_LABEL = "ToolCount"
 
--- Batas maksimum integer 2 byte
-local MAX_COUNT = 65535
-
 -- ===== USERNAME → ID =====
 local idCache = {}
 
@@ -90,31 +86,22 @@ local function getUserIdFromUsername(username)
 end
 
 -- ===== PAYLOAD BUILDERS =====
--- writeInt: integer 16-bit little-endian (max 65535)
-local function writeIntU16(writeU8, n)
-	n = math.floor(n)
-	if n < 0 then n = 0 end
-	if n > 65535 then n = 65535 end
-	writeU8(0x05)                   -- type marker integer
-	writeU8(n % 256)                -- low byte
-	writeU8(math.floor(n / 256) % 256) -- high byte
-end
-
 local function buildSinglePayload(targetUserId, itemName, count, category)
-	local buf = buffer.create(1024)
+	local buf = buffer.create(512)
 	local pos = 0
 	local function writeU8(n) buffer.writeu8(buf, pos, n); pos += 1 end
 	local function writeString(s)
 		writeU8(0x0B); writeU8(#s)
 		for i = 1, #s do writeU8(string.byte(s, i)) end
 	end
+	local function writeInt(n) writeU8(0x05); writeU8(n) end
 
 	writeU8(0x8C); writeU8(0x01); writeU8(0x69)
 	buffer.writef64(buf, pos, targetUserId); pos += 8
 	writeU8(0x1C); writeU8(0x05); writeU8(0x01); writeU8(0x1C)
 
 	writeString("ItemKey"); writeString(itemName)
-	writeString("Count"); writeIntU16(writeU8, count)
+	writeString("Count"); writeInt(count)
 	writeString("Category"); writeString(category)
 	writeU8(0x00); writeU8(0x00); writeU8(0x00)
 
@@ -124,13 +111,14 @@ local function buildSinglePayload(targetUserId, itemName, count, category)
 end
 
 local function buildMultiPayload(targetUserId, items, category)
-	local buf = buffer.create(4096)
+	local buf = buffer.create(2048)
 	local pos = 0
 	local function writeU8(n) buffer.writeu8(buf, pos, n); pos += 1 end
 	local function writeString(s)
 		writeU8(0x0B); writeU8(#s)
 		for i = 1, #s do writeU8(string.byte(s, i)) end
 	end
+	local function writeInt(n) writeU8(0x05); writeU8(n) end
 
 	writeU8(0x8C); writeU8(0x01); writeU8(0x69)
 	buffer.writef64(buf, pos, targetUserId); pos += 8
@@ -138,7 +126,7 @@ local function buildMultiPayload(targetUserId, items, category)
 
 	for i, item in ipairs(items) do
 		writeString("ItemKey"); writeString(item.name)
-		writeString("Count"); writeIntU16(writeU8, item.count)
+		writeString("Count"); writeInt(item.count)
 		writeString("Category"); writeString(category or "Seeds")
 		writeU8(0x00)
 		if i < #items then
@@ -303,7 +291,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -50, 1, 0)
 title.Position = UDim2.new(0, 12, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "📨 Item Sender v8"
+title.Text = "📨 Item Sender v7"
 title.TextColor3 = COLORS.text
 title.Font = Enum.Font.GothamBold
 title.TextSize = 12
@@ -425,9 +413,9 @@ corner(sendBtn, 8)
 -- ============================================================
 -- ===== STATE & LOGIC =====
 -- ============================================================
-local cachedScan = {}
-local selectedItems = {}
-local rowRefs = {}
+local cachedScan = {}       -- hasil scan terakhir
+local selectedItems = {}    -- [display] = { checked = bool, count = number }
+local rowRefs = {}          -- [display] = { row, checkbox, checkMark, countBox, stockLbl }
 
 local function getItemsByCategory(cat)
 	local list = {}
@@ -437,6 +425,7 @@ local function getItemsByCategory(cat)
 	return list
 end
 
+-- Update info label dari item yang checked
 local function updateInfo()
 	local parts = {}
 	local total = 0
@@ -456,6 +445,7 @@ local function updateInfo()
 	end
 end
 
+-- Update stok untuk semua row (dari cache)
 local function updateStock()
 	for _, item in ipairs(ITEMS) do
 		local ref = rowRefs[item.display]
@@ -467,6 +457,7 @@ local function updateStock()
 	end
 end
 
+-- Buat 1 row item (checkbox + nama + stok + input jumlah)
 local function makeItemRow(item, layoutOrder)
 	local row = Instance.new("Frame")
 	row.Size = UDim2.new(1, 0, 0, 30)
@@ -476,6 +467,7 @@ local function makeItemRow(item, layoutOrder)
 	row.Parent = listFrame
 	corner(row, 6)
 
+	-- Checkbox
 	local checkbox = Instance.new("TextButton")
 	checkbox.Size = UDim2.new(0, 18, 0, 18)
 	checkbox.Position = UDim2.new(0, 6, 0.5, -9)
@@ -496,6 +488,7 @@ local function makeItemRow(item, layoutOrder)
 	checkMark.TextTransparency = 1
 	checkMark.Parent = checkbox
 
+	-- Nama item
 	local nameLbl = Instance.new("TextLabel")
 	nameLbl.Size = UDim2.new(1, -150, 1, 0)
 	nameLbl.Position = UDim2.new(0, 30, 0, 0)
@@ -508,6 +501,7 @@ local function makeItemRow(item, layoutOrder)
 	nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
 	nameLbl.Parent = row
 
+	-- Stok kecil
 	local stockLbl = Instance.new("TextLabel")
 	stockLbl.Size = UDim2.new(0, 80, 0, 10)
 	stockLbl.Position = UDim2.new(0, 30, 0, 18)
@@ -519,6 +513,7 @@ local function makeItemRow(item, layoutOrder)
 	stockLbl.TextXAlignment = Enum.TextXAlignment.Left
 	stockLbl.Parent = row
 
+	-- Input jumlah
 	local countBox = Instance.new("TextBox")
 	countBox.Size = UDim2.new(0, 60, 0, 22)
 	countBox.Position = UDim2.new(1, -66, 0.5, -11)
@@ -535,6 +530,7 @@ local function makeItemRow(item, layoutOrder)
 	countBox.Parent = row
 	corner(countBox, 5)
 
+	-- State
 	selectedItems[item.display] = selectedItems[item.display] or { checked = false, count = 0 }
 
 	local function refreshRowVisual()
@@ -560,13 +556,22 @@ local function makeItemRow(item, layoutOrder)
 	countBox:GetPropertyChangedSignal("Text"):Connect(function()
 		local num = tonumber(countBox.Text) or 0
 		if num < 0 then num = 0; countBox.Text = "0" end
-		if num > MAX_COUNT then num = MAX_COUNT; countBox.Text = tostring(MAX_COUNT) end
+		if num > 255 then num = 255; countBox.Text = "255" end
 		selectedItems[item.display].count = num
+		-- auto-check kalau user isi angka
 		if num > 0 and not selectedItems[item.display].checked then
 			selectedItems[item.display].checked = true
 			refreshRowVisual()
 		end
 		updateInfo()
+	end)
+
+	-- klik row = toggle checkbox
+	row.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			-- biar tidak dobel kalau klik checkbox/countBox langsung
+			-- (mereka consume sendiri)
+		end
 	end)
 
 	rowRefs[item.display] = {
@@ -579,6 +584,7 @@ local function makeItemRow(item, layoutOrder)
 end
 
 local function buildRows()
+	-- hapus row lama
 	for _, child in ipairs(listFrame:GetChildren()) do
 		if child:IsA("Frame") then child:Destroy() end
 	end
@@ -648,9 +654,9 @@ sendBtn.MouseButton1Click:Connect(function()
 		local s = selectedItems[item.display]
 		if s and s.checked and s.count > 0 then
 			local stock = lookupCount(cachedScan, item.lookup)
-			local sendCount = math.min(s.count, stock, MAX_COUNT)
+			local sendCount = math.min(s.count, stock, 255)
 			if sendCount > 0 then
-				table.insert(sendItems, { name = item.name, count = sendCount, category = item.category })
+				table.insert(sendItems, { name = item.name, count = sendCount })
 			end
 		end
 	end
@@ -676,11 +682,16 @@ sendBtn.MouseButton1Click:Connect(function()
 			return
 		end
 
-		-- Kelompokkan per kategori
+		-- Kelompokkan per kategori (payload pakai category)
 		local byCat = {}
 		for _, it in ipairs(sendItems) do
-			byCat[it.category] = byCat[it.category] or {}
-			table.insert(byCat[it.category], it)
+			local itemDef
+			for _, d in ipairs(ITEMS) do
+				if d.name == it.name then itemDef = d; break end
+			end
+			local cat = itemDef and itemDef.category or "Seeds"
+			byCat[cat] = byCat[cat] or {}
+			table.insert(byCat[cat], it)
 		end
 
 		local sent = 0
