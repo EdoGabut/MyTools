@@ -1,9 +1,8 @@
 -- ============================================================
--- Item Sender Minimalis v6
--- - Kategori: Seeds, Sprinklers, Watering Cans
--- - ItemKey pakai `name` (display-style), lookup untuk scan
--- - Ganti kategori instan (pakai cache, scan di background)
--- - Username preset: krinjguy67, andri21649, notexd777
+-- Item Sender Minimalis v7
+-- - 1 log label saja (ringkasan seed & super items)
+-- - Username via preset (tanpa TextBox)
+-- - Compact GUI 220x180
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -13,16 +12,12 @@ local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 
--- ===== REMOTE =====
 local remote = ReplicatedStorage:WaitForChild("SharedModules")
 	:WaitForChild("Packet"):WaitForChild("RemoteEvent")
 
 -- ===== CONFIG =====
--- display = nama tampil di GUI
--- name    = ItemKey yang dikirim ke server
--- lookup  = nama item di inventory (ToolName) untuk scan
 local ITEMS = {
-	-- ===== SEEDS =====
+	-- SEEDS
 	{ display = "Spirethorn",    name = "Spirethorn",    lookup = "Spirethorn Seed",    category = "Seeds" },
 	{ display = "Briar Rose",    name = "Briar Rose",    lookup = "Briar Rose Seed",    category = "Seeds" },
 	{ display = "Gold",          name = "Gold",          lookup = "Gold Seed",          category = "Seeds" },
@@ -30,31 +25,27 @@ local ITEMS = {
 	{ display = "Rainbow",       name = "Rainbow",       lookup = "Rainbow Seed",       category = "Seeds" },
 	{ display = "Great Pumpkin", name = "Great Pumpkin", lookup = "Great Pumpkin Seed", category = "Seeds" },
 	{ display = "Vampire Bloom", name = "Vampire Bloom", lookup = "Vampire Bloom Seed", category = "Seeds" },
-
-	-- ===== SPRINKLERS =====
+	-- SPRINKLERS
 	{ display = "Common Cider Sprinkler",    name = "Common Cider Sprinkler",    lookup = "Common Cider Sprinkler",    category = "Sprinklers" },
 	{ display = "Uncommon Cider Sprinkler",  name = "Uncommon Cider Sprinkler",  lookup = "Uncommon Cider Sprinkler",  category = "Sprinklers" },
 	{ display = "Rare Cider Sprinkler",      name = "Rare Cider Sprinkler",      lookup = "Rare Cider Sprinkler",      category = "Sprinklers" },
 	{ display = "Legendary Cider Sprinkler", name = "Legendary Cider Sprinkler", lookup = "Legendary Cider Sprinkler", category = "Sprinklers" },
 	{ display = "Super Cider Sprinkler",     name = "Super Cider Sprinkler",     lookup = "Super Cider Sprinkler",     category = "Sprinklers" },
-
-	-- ===== WATERING CANS =====
-	{ display = "Cider Watering Can",        name = "Cider Watering Can",        lookup = "Cider Watering Can",        category = "WateringCans" },
-	{ display = "Super Cider Watering Can",  name = "Super Cider Watering Can",  lookup = "Super Cider Watering Can",  category = "WateringCans" },
+	-- WATERING CANS
+	{ display = "Cider Watering Can",       name = "Cider Watering Can",       lookup = "Cider Watering Can",       category = "WateringCans" },
+	{ display = "Super Cider Watering Can", name = "Super Cider Watering Can", lookup = "Super Cider Watering Can", category = "WateringCans" },
 }
 
 local CATEGORIES = {
-	{ name = "Seeds",        label = "🌱 Seeds" },
-	{ name = "Sprinklers",   label = "💧 Sprinklers" },
-	{ name = "WateringCans", label = "🚿 Watering" },
+	{ name = "Seeds",        label = "🌱" },
+	{ name = "Sprinklers",   label = "💧" },
+	{ name = "WateringCans", label = "🚿" },
 }
 
 local USERNAME_PRESETS = { "krinjguy67", "andri21649", "notexd777" }
 
 local HOTBAR_PATH   = { "BackpackGui", "Backpack", "Hotbar" }
 local BACKPACK_PATH = { "BackpackGui", "Backpack", "Inventory", "ScrollingFrame", "UIGridFrame" }
-local TOOL_NAME_LABEL  = "ToolName"
-local TOOL_COUNT_LABEL = "ToolCount"
 
 -- ===== USERNAME → ID =====
 local idCache = {}
@@ -105,7 +96,6 @@ local function buildSinglePayload(targetUserId, itemName, count, category)
 	writeU8(0x8C); writeU8(0x01); writeU8(0x69)
 	buffer.writef64(buf, pos, targetUserId); pos += 8
 	writeU8(0x1C); writeU8(0x05); writeU8(0x01); writeU8(0x1C)
-
 	writeString("ItemKey"); writeString(itemName)
 	writeString("Count"); writeInt(count)
 	writeString("Category"); writeString(category)
@@ -167,8 +157,8 @@ local function scanContainer(container)
 	if not container then return map end
 	for _, slot in ipairs(container:GetChildren()) do
 		if slot:IsA("Frame") or slot:IsA("TextButton") or slot:IsA("ImageButton") then
-			local tn = slot:FindFirstChild(TOOL_NAME_LABEL, true)
-			local tc = slot:FindFirstChild(TOOL_COUNT_LABEL, true)
+			local tn = slot:FindFirstChild("ToolName", true)
+			local tc = slot:FindFirstChild("ToolCount", true)
 			if tn and tn:IsA("TextLabel") and tn.Text ~= "" then
 				local count = 1
 				if tc and tc:IsA("TextLabel") then
@@ -203,7 +193,7 @@ local function lookupCount(map, itemName)
 end
 
 -- ============================================================
--- ===== BUILD GUI =====
+-- ===== BUILD GUI (COMPACT) =====
 -- ============================================================
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "ItemSenderMini"
@@ -211,31 +201,28 @@ screenGui.ResetOnSpawn = false
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
 local COLORS = {
-	bg          = Color3.fromRGB(22, 22, 28),
-	header      = Color3.fromRGB(16, 16, 20),
-	input       = Color3.fromRGB(15, 15, 20),
-	text        = Color3.fromRGB(235, 235, 240),
-	textDim     = Color3.fromRGB(140, 140, 155),
-	placeholder = Color3.fromRGB(110, 110, 125),
-	green       = Color3.fromRGB(80, 200, 120),
-	greenHv     = Color3.fromRGB(100, 220, 140),
-	red         = Color3.fromRGB(200, 70, 70),
-	disabled    = Color3.fromRGB(60, 60, 70),
-	stroke      = Color3.fromRGB(60, 60, 72),
-	preset      = Color3.fromRGB(45, 45, 55),
-	presetHv    = Color3.fromRGB(60, 60, 72),
-	active      = Color3.fromRGB(80, 130, 200),
-	inactive    = Color3.fromRGB(40, 40, 50),
+	bg       = Color3.fromRGB(22, 22, 28),
+	header   = Color3.fromRGB(16, 16, 20),
+	text     = Color3.fromRGB(235, 235, 240),
+	textDim  = Color3.fromRGB(140, 140, 155),
+	green    = Color3.fromRGB(80, 200, 120),
+	greenHv  = Color3.fromRGB(100, 220, 140),
+	red      = Color3.fromRGB(200, 70, 70),
+	yellow   = Color3.fromRGB(230, 200, 90),
+	disabled = Color3.fromRGB(70, 70, 85),
+	stroke   = Color3.fromRGB(60, 60, 72),
+	active   = Color3.fromRGB(80, 130, 200),
+	inactive = Color3.fromRGB(40, 40, 50),
+	preset   = Color3.fromRGB(45, 45, 55),
+	presetHv = Color3.fromRGB(60, 60, 72),
 }
 
 local function corner(p, r)
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = p
 end
 
-local FRAME_WIDTH, FRAME_HEIGHT = 260, 260
-
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
+frame.Size = UDim2.new(0, 220, 0, 170)
 frame.Position = UDim2.new(0, 15, 0, 15)
 frame.BackgroundColor3 = COLORS.bg
 frame.BorderSizePixel = 0
@@ -277,7 +264,7 @@ end)
 
 -- Title bar
 local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 30)
+titleBar.Size = UDim2.new(1, 0, 0, 26)
 titleBar.BackgroundColor3 = COLORS.header
 titleBar.BorderSizePixel = 0
 titleBar.ZIndex = 20
@@ -293,103 +280,57 @@ fix.ZIndex = 20
 fix.Parent = titleBar
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -50, 1, 0)
-title.Position = UDim2.new(0, 12, 0, 0)
+title.Size = UDim2.new(1, -60, 1, 0)
+title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "📨 Item Sender"
+title.Text = "📨 Sender"
 title.TextColor3 = COLORS.text
 title.Font = Enum.Font.GothamBold
-title.TextSize = 12
+title.TextSize = 11
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.ZIndex = 21
 title.Parent = titleBar
 
+-- Preset selector (kiri di title bar)
+local presetBtn = Instance.new("TextButton")
+presetBtn.Size = UDim2.new(0, 90, 0, 18)
+presetBtn.Position = UDim2.new(1, -114, 0, 4)
+presetBtn.BackgroundColor3 = COLORS.preset
+presetBtn.Text = USERNAME_PRESETS[1]
+presetBtn.TextColor3 = COLORS.textDim
+presetBtn.Font = Enum.Font.GothamMedium
+presetBtn.TextSize = 9
+presetBtn.BorderSizePixel = 0
+presetBtn.AutoButtonColor = false
+presetBtn.TextTruncate = Enum.TextTruncate.AtEnd
+presetBtn.ZIndex = 21
+presetBtn.Parent = titleBar
+corner(presetBtn, 5)
+
 local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 22, 0, 22)
-closeBtn.Position = UDim2.new(1, -28, 0, 4)
+closeBtn.Size = UDim2.new(0, 18, 0, 18)
+closeBtn.Position = UDim2.new(1, -22, 0, 4)
 closeBtn.BackgroundColor3 = COLORS.red
 closeBtn.Text = "×"
 closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 14
+closeBtn.TextSize = 12
 closeBtn.BorderSizePixel = 0
 closeBtn.AutoButtonColor = false
 closeBtn.ZIndex = 21
 closeBtn.Parent = titleBar
-corner(closeBtn, 6)
+corner(closeBtn, 5)
 
 -- Body
 local body = Instance.new("Frame")
-body.Size = UDim2.new(1, -16, 1, -38)
-body.Position = UDim2.new(0, 8, 0, 34)
+body.Size = UDim2.new(1, -12, 1, -32)
+body.Position = UDim2.new(0, 6, 0, 28)
 body.BackgroundTransparency = 1
 body.Parent = frame
 
--- USERNAME INPUT
-local userBox = Instance.new("TextBox")
-userBox.Size = UDim2.new(1, 0, 0, 32)
-userBox.BackgroundColor3 = COLORS.input
-userBox.Text = ""
-userBox.PlaceholderText = "Username / ID"
-userBox.TextColor3 = COLORS.text
-userBox.PlaceholderColor3 = COLORS.placeholder
-userBox.Font = Enum.Font.GothamMedium
-userBox.TextSize = 12
-userBox.TextXAlignment = Enum.TextXAlignment.Left
-userBox.ClearTextOnFocus = false
-userBox.BorderSizePixel = 0
-userBox.Parent = body
-corner(userBox, 8)
-local uPad = Instance.new("UIPadding", userBox)
-uPad.PaddingLeft = UDim.new(0, 10)
-uPad.PaddingRight = UDim.new(0, 10)
-
--- USERNAME PRESETS
-local presetRow = Instance.new("Frame")
-presetRow.Size = UDim2.new(1, 0, 0, 22)
-presetRow.Position = UDim2.new(0, 0, 0, 36)
-presetRow.BackgroundTransparency = 1
-presetRow.Parent = body
-
-local presetLayout = Instance.new("UIListLayout")
-presetLayout.FillDirection = Enum.FillDirection.Horizontal
-presetLayout.Padding = UDim.new(0, 4)
-presetLayout.SortOrder = Enum.SortOrder.LayoutOrder
-presetLayout.Parent = presetRow
-
-for i, uname in ipairs(USERNAME_PRESETS) do
-	local pBtn = Instance.new("TextButton")
-	pBtn.Size = UDim2.new(0, 0, 1, 0)
-	pBtn.AutomaticSize = Enum.AutomaticSize.X
-	pBtn.BackgroundColor3 = COLORS.preset
-	pBtn.Text = uname
-	pBtn.TextColor3 = COLORS.textDim
-	pBtn.Font = Enum.Font.GothamMedium
-	pBtn.TextSize = 10
-	pBtn.BorderSizePixel = 0
-	pBtn.AutoButtonColor = false
-	pBtn.LayoutOrder = i
-	pBtn.Parent = presetRow
-	corner(pBtn, 5)
-	local pad = Instance.new("UIPadding", pBtn)
-	pad.PaddingLeft = UDim.new(0, 8)
-	pad.PaddingRight = UDim.new(0, 8)
-
-	pBtn.MouseButton1Click:Connect(function() userBox.Text = uname end)
-	pBtn.MouseEnter:Connect(function()
-		pBtn.BackgroundColor3 = COLORS.presetHv
-		pBtn.TextColor3 = COLORS.text
-	end)
-	pBtn.MouseLeave:Connect(function()
-		pBtn.BackgroundColor3 = COLORS.preset
-		pBtn.TextColor3 = COLORS.textDim
-	end)
-end
-
--- CATEGORY TABS
+-- CATEGORY TABS (compact, ikon saja)
 local catRow = Instance.new("Frame")
-catRow.Size = UDim2.new(1, 0, 0, 26)
-catRow.Position = UDim2.new(0, 0, 0, 62)
+catRow.Size = UDim2.new(1, 0, 0, 24)
 catRow.BackgroundTransparency = 1
 catRow.Parent = body
 
@@ -402,56 +343,35 @@ catLayout.Parent = catRow
 local currentCategory = CATEGORIES[1].name
 local catButtons = {}
 
--- INFO LABEL
-local infoLbl = Instance.new("TextLabel")
-infoLbl.Size = UDim2.new(1, 0, 0, 26)
-infoLbl.Position = UDim2.new(0, 0, 0, 92)
-infoLbl.BackgroundColor3 = COLORS.header
-infoLbl.BorderSizePixel = 0
-infoLbl.Text = "Memuat..."
-infoLbl.TextColor3 = COLORS.textDim
-infoLbl.Font = Enum.Font.Code
-infoLbl.TextSize = 10
-infoLbl.TextXAlignment = Enum.TextXAlignment.Left
-infoLbl.TextTruncate = Enum.TextTruncate.AtEnd
-infoLbl.Parent = body
-corner(infoLbl, 6)
-local iPad = Instance.new("UIPadding", infoLbl)
-iPad.PaddingLeft = UDim.new(0, 8)
-iPad.PaddingRight = UDim.new(0, 8)
-
--- ITEM LIST
-local listFrame = Instance.new("ScrollingFrame")
-listFrame.Size = UDim2.new(1, 0, 0, 60)
-listFrame.Position = UDim2.new(0, 0, 0, 122)
-listFrame.BackgroundColor3 = COLORS.header
-listFrame.BorderSizePixel = 0
-listFrame.ScrollBarThickness = 3
-listFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-listFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-listFrame.Parent = body
-corner(listFrame, 6)
-local lPad = Instance.new("UIPadding", listFrame)
-lPad.PaddingLeft = UDim.new(0, 4)
-lPad.PaddingRight = UDim.new(0, 4)
-lPad.PaddingTop = UDim.new(0, 4)
-lPad.PaddingBottom = UDim.new(0, 4)
-
-local listLayout = Instance.new("UIListLayout")
-listLayout.FillDirection = Enum.FillDirection.Vertical
-listLayout.Padding = UDim.new(0, 2)
-listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Parent = listFrame
+-- LOG LABEL (satu-satunya log)
+local logLbl = Instance.new("TextLabel")
+logLbl.Size = UDim2.new(1, 0, 0, 40)
+logLbl.Position = UDim2.new(0, 0, 0, 30)
+logLbl.BackgroundColor3 = COLORS.header
+logLbl.BorderSizePixel = 0
+logLbl.Text = "Scanning..."
+logLbl.TextColor3 = COLORS.textDim
+logLbl.Font = Enum.Font.Code
+logLbl.TextSize = 10
+logLbl.TextXAlignment = Enum.TextXAlignment.Left
+logLbl.TextYAlignment = Enum.TextYAlignment.Top
+logLbl.TextWrapped = true
+logLbl.Parent = body
+corner(logLbl, 6)
+local lPad = Instance.new("UIPadding", logLbl)
+lPad.PaddingLeft = UDim.new(0, 8)
+lPad.PaddingRight = UDim.new(0, 8)
+lPad.PaddingTop = UDim.new(0, 6)
 
 -- SEND BUTTON
 local sendBtn = Instance.new("TextButton")
-sendBtn.Size = UDim2.new(1, 0, 0, 36)
-sendBtn.Position = UDim2.new(0, 0, 1, -36)
+sendBtn.Size = UDim2.new(1, 0, 0, 32)
+sendBtn.Position = UDim2.new(0, 0, 1, -32)
 sendBtn.BackgroundColor3 = COLORS.green
 sendBtn.Text = "SEND"
 sendBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 sendBtn.Font = Enum.Font.GothamBold
-sendBtn.TextSize = 13
+sendBtn.TextSize = 12
 sendBtn.BorderSizePixel = 0
 sendBtn.AutoButtonColor = false
 sendBtn.Parent = body
@@ -460,8 +380,9 @@ corner(sendBtn, 8)
 -- ============================================================
 -- ===== STATE & LOGIC =====
 -- ============================================================
-local currentCounts = {}   -- [display] = count (kategori aktif)
-local cachedScan = {}      -- hasil scan terakhir
+local cachedScan = {}
+local currentCounts = {}
+local selectedUser = USERNAME_PRESETS[1]
 
 local function getItemsByCategory(cat)
 	local list = {}
@@ -471,43 +392,39 @@ local function getItemsByCategory(cat)
 	return list
 end
 
-local function render()
-	local items = getItemsByCategory(currentCategory)
+-- Ringkasan: total seed & item super (per kategori aktif? semua?)
+local function buildSummary()
+	local seedTotal = 0
+	local superList = {}
 	local parts = {}
-	local totalJenis = 0
-	currentCounts = {}
 
-	for _, child in ipairs(listFrame:GetChildren()) do
-		if child:IsA("TextLabel") then child:Destroy() end
-	end
-
-	for i, item in ipairs(items) do
+	for _, item in ipairs(ITEMS) do
 		local count = lookupCount(cachedScan, item.lookup)
 		currentCounts[item.display] = count
 		if count > 0 then
-			totalJenis += 1
-			table.insert(parts, string.format("%s x%d", item.display, count))
+			if item.category == "Seeds" then
+				seedTotal += count
+			end
+			-- item "super" = apapun yang ada kata "Super" di display
+			if item.display:lower():find("super") then
+				table.insert(superList, string.format("%s×%d", item.display, count))
+			end
 		end
-
-		local row = Instance.new("TextLabel")
-		row.Size = UDim2.new(1, 0, 0, 16)
-		row.BackgroundTransparency = 1
-		row.Text = string.format("  %s  ×%d", item.display, count)
-		row.TextColor3 = (count > 0) and COLORS.green or COLORS.disabled
-		row.Font = Enum.Font.Code
-		row.TextSize = 10
-		row.TextXAlignment = Enum.TextXAlignment.Left
-		row.LayoutOrder = i
-		row.Parent = listFrame
 	end
 
-	if totalJenis == 0 then
-		infoLbl.Text = "Tidak ada item di kategori ini"
-		infoLbl.TextColor3 = COLORS.disabled
+	table.insert(parts, string.format("🌱 Seeds: %d", seedTotal))
+	if #superList > 0 then
+		table.insert(parts, "⭐ " .. table.concat(superList, ", "))
 	else
-		infoLbl.Text = table.concat(parts, " · ")
-		infoLbl.TextColor3 = COLORS.green
+		table.insert(parts, "⭐ Super: -")
 	end
+
+	return table.concat(parts, "\n")
+end
+
+local function render()
+	logLbl.Text = buildSummary()
+	logLbl.TextColor3 = COLORS.green
 end
 
 local function refresh()
@@ -524,15 +441,15 @@ for i, cat in ipairs(CATEGORIES) do
 	cBtn.Text = cat.label
 	cBtn.TextColor3 = COLORS.text
 	cBtn.Font = Enum.Font.GothamBold
-	cBtn.TextSize = 10
+	cBtn.TextSize = 12
 	cBtn.BorderSizePixel = 0
 	cBtn.AutoButtonColor = false
 	cBtn.LayoutOrder = i
 	cBtn.Parent = catRow
 	corner(cBtn, 6)
 	local pad = Instance.new("UIPadding", cBtn)
-	pad.PaddingLeft = UDim.new(0, 8)
-	pad.PaddingRight = UDim.new(0, 8)
+	pad.PaddingLeft = UDim.new(0, 14)
+	pad.PaddingRight = UDim.new(0, 14)
 
 	catButtons[cat.name] = cBtn
 
@@ -542,10 +459,28 @@ for i, cat in ipairs(CATEGORIES) do
 		for name, btn in pairs(catButtons) do
 			btn.BackgroundColor3 = (name == currentCategory) and COLORS.active or COLORS.inactive
 		end
-		render()            -- instan pakai cache
-		task.spawn(refresh) -- scan ulang di background
+		render()
+		task.spawn(refresh)
 	end)
 end
+
+-- Preset selector: klik = ganti user berikutnya
+presetBtn.MouseButton1Click:Connect(function()
+	local idx = 1
+	for i, u in ipairs(USERNAME_PRESETS) do
+		if u == selectedUser then idx = i break end
+	end
+	selectedUser = USERNAME_PRESETS[(idx % #USERNAME_PRESETS) + 1]
+	presetBtn.Text = selectedUser
+end)
+presetBtn.MouseEnter:Connect(function()
+	presetBtn.BackgroundColor3 = COLORS.presetHv
+	presetBtn.TextColor3 = COLORS.text
+end)
+presetBtn.MouseLeave:Connect(function()
+	presetBtn.BackgroundColor3 = COLORS.preset
+	presetBtn.TextColor3 = COLORS.textDim
+end)
 
 -- ===== SEND ACTION =====
 local function flashSend(text, color, duration)
@@ -567,7 +502,7 @@ sendBtn.MouseButton1Click:Connect(function()
 		local count = currentCounts[item.display] or 0
 		if count > 0 then
 			table.insert(sendItems, {
-				name = item.name,   -- pakai `name`, bukan lookup
+				name = item.name,
 				count = math.min(count, 255),
 			})
 		end
@@ -578,17 +513,11 @@ sendBtn.MouseButton1Click:Connect(function()
 		return
 	end
 
-	local username = userBox.Text:gsub("%s", "")
-	if username == "" then
-		flashSend("Isi username", COLORS.red)
-		return
-	end
-
 	sendBtn.Text = "Loading..."
 	sendBtn.Active = false
 
 	task.spawn(function()
-		local targetId = getUserIdFromUsername(username)
+		local targetId = getUserIdFromUsername(selectedUser)
 		if not targetId then
 			flashSend("User gak ketemu", COLORS.red)
 			return
@@ -601,17 +530,10 @@ sendBtn.MouseButton1Click:Connect(function()
 			payload = buildMultiPayload(targetId, sendItems, currentCategory)
 		end
 
-		if not payload then
-			flashSend("Payload fail", COLORS.red)
-			return
-		end
-
-		sendBtn.Text = string.format("Send %d...", #sendItems)
-
 		local ok = pcall(function() remote:FireServer(payload) end)
 
 		if ok then
-			flashSend(string.format("Terkirim %d jenis", #sendItems), COLORS.green, 2)
+			flashSend(string.format("✓ %d item", #sendItems), COLORS.green, 2)
 			task.wait(1.5)
 			refresh()
 		else
@@ -631,7 +553,6 @@ sendBtn.MouseLeave:Connect(function()
 	end
 end)
 
--- CLOSE
 closeBtn.MouseButton1Click:Connect(function()
 	screenGui:Destroy()
 end)
