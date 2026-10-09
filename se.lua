@@ -1,8 +1,9 @@
 -- ============================================================
--- Item Sender Minimalis v7
--- - 1 log label saja (ringkasan seed & super items)
--- - Username via preset (tanpa TextBox)
--- - Compact GUI 220x180
+-- Item Sender Minimalis v8 (BATCH ALL)
+-- - 1 payload untuk semua kategori
+-- - Category per-item di dalam payload
+-- - 1 log label ringkasan
+-- - Username via preset
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -83,8 +84,9 @@ local function getUserIdFromUsername(username)
 end
 
 -- ===== PAYLOAD BUILDERS =====
-local function buildSinglePayload(targetUserId, itemName, count, category)
-	local buf = buffer.create(512)
+-- Multi payload: tiap item punya `category` sendiri (bisa campur kategori)
+local function buildMultiPayload(targetUserId, items)
+	local buf = buffer.create(4096)
 	local pos = 0
 	local function writeU8(n) buffer.writeu8(buf, pos, n); pos += 1 end
 	local function writeString(s)
@@ -93,42 +95,23 @@ local function buildSinglePayload(targetUserId, itemName, count, category)
 	end
 	local function writeInt(n) writeU8(0x05); writeU8(n) end
 
-	writeU8(0x8C); writeU8(0x01); writeU8(0x69)
-	buffer.writef64(buf, pos, targetUserId); pos += 8
-	writeU8(0x1C); writeU8(0x05); writeU8(0x01); writeU8(0x1C)
-	writeString("ItemKey"); writeString(itemName)
-	writeString("Count"); writeInt(count)
-	writeString("Category"); writeString(category)
-	writeU8(0x00); writeU8(0x00); writeU8(0x00)
-
-	local final = buffer.create(pos)
-	buffer.copy(final, 0, buf, 0, pos)
-	return final
-end
-
-local function buildMultiPayload(targetUserId, items, category)
-	local buf = buffer.create(2048)
-	local pos = 0
-	local function writeU8(n) buffer.writeu8(buf, pos, n); pos += 1 end
-	local function writeString(s)
-		writeU8(0x0B); writeU8(#s)
-		for i = 1, #s do writeU8(string.byte(s, i)) end
-	end
-	local function writeInt(n) writeU8(0x05); writeU8(n) end
-
-	writeU8(0x8C); writeU8(0x01); writeU8(0x69)
+	-- Header
+	writeU8(0x8C); writeU8(0x01); writeU8(0x69)  -- header umum
 	buffer.writef64(buf, pos, targetUserId); pos += 8
 	writeU8(0x1C); writeU8(0x05); writeU8(0x01); writeU8(0x1C)
 
+	-- Items (masing-masing punya Category sendiri)
 	for i, item in ipairs(items) do
 		writeString("ItemKey"); writeString(item.name)
 		writeString("Count"); writeInt(item.count)
-		writeString("Category"); writeString(category or "Seeds")
+		writeString("Category"); writeString(item.category)
 		writeU8(0x00)
 		if i < #items then
-			writeU8(0x05); writeU8(i + 1); writeU8(0x1C)
+			writeU8(0x05); writeU8(i + 1); writeU8(0x1C)  -- index berikutnya
 		end
 	end
+
+	-- Terminator
 	writeU8(0x00); writeU8(0x00); writeU8(0x00)
 
 	local final = buffer.create(pos)
@@ -208,7 +191,6 @@ local COLORS = {
 	green    = Color3.fromRGB(80, 200, 120),
 	greenHv  = Color3.fromRGB(100, 220, 140),
 	red      = Color3.fromRGB(200, 70, 70),
-	yellow   = Color3.fromRGB(230, 200, 90),
 	disabled = Color3.fromRGB(70, 70, 85),
 	stroke   = Color3.fromRGB(60, 60, 72),
 	active   = Color3.fromRGB(80, 130, 200),
@@ -291,7 +273,6 @@ title.TextXAlignment = Enum.TextXAlignment.Left
 title.ZIndex = 21
 title.Parent = titleBar
 
--- Preset selector (kiri di title bar)
 local presetBtn = Instance.new("TextButton")
 presetBtn.Size = UDim2.new(0, 90, 0, 18)
 presetBtn.Position = UDim2.new(1, -114, 0, 4)
@@ -328,7 +309,7 @@ body.Position = UDim2.new(0, 6, 0, 28)
 body.BackgroundTransparency = 1
 body.Parent = frame
 
--- CATEGORY TABS (compact, ikon saja)
+-- CATEGORY TABS (cuma buat filter log, bukan filter kirim)
 local catRow = Instance.new("Frame")
 catRow.Size = UDim2.new(1, 0, 0, 24)
 catRow.BackgroundTransparency = 1
@@ -343,7 +324,7 @@ catLayout.Parent = catRow
 local currentCategory = CATEGORIES[1].name
 local catButtons = {}
 
--- LOG LABEL (satu-satunya log)
+-- LOG LABEL
 local logLbl = Instance.new("TextLabel")
 logLbl.Size = UDim2.new(1, 0, 0, 40)
 logLbl.Position = UDim2.new(0, 0, 0, 30)
@@ -368,7 +349,7 @@ local sendBtn = Instance.new("TextButton")
 sendBtn.Size = UDim2.new(1, 0, 0, 32)
 sendBtn.Position = UDim2.new(0, 0, 1, -32)
 sendBtn.BackgroundColor3 = COLORS.green
-sendBtn.Text = "SEND"
+sendBtn.Text = "SEND ALL"
 sendBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 sendBtn.Font = Enum.Font.GothamBold
 sendBtn.TextSize = 12
@@ -381,45 +362,46 @@ corner(sendBtn, 8)
 -- ===== STATE & LOGIC =====
 -- ============================================================
 local cachedScan = {}
-local currentCounts = {}
+local currentCounts = {}  -- [display] = count (semua kategori)
 local selectedUser = USERNAME_PRESETS[1]
 
-local function getItemsByCategory(cat)
+-- Ambil SEMUA item (semua kategori) yang count > 0
+local function collectAllSendItems()
 	local list = {}
 	for _, item in ipairs(ITEMS) do
-		if item.category == cat then table.insert(list, item) end
+		local count = currentCounts[item.display] or 0
+		if count > 0 then
+			table.insert(list, {
+				name = item.name,
+				count = math.min(count, 255),
+				category = item.category,  -- per-item category
+				display = item.display,
+			})
+		end
 	end
 	return list
 end
 
--- Ringkasan: total seed & item super (per kategori aktif? semua?)
+-- Ringkasan log
 local function buildSummary()
-	local seedTotal = 0
-	local superList = {}
-	local parts = {}
-
 	for _, item in ipairs(ITEMS) do
-		local count = lookupCount(cachedScan, item.lookup)
-		currentCounts[item.display] = count
-		if count > 0 then
-			if item.category == "Seeds" then
-				seedTotal += count
-			end
-			-- item "super" = apapun yang ada kata "Super" di display
-			if item.display:lower():find("super") then
-				table.insert(superList, string.format("%s×%d", item.display, count))
-			end
+		currentCounts[item.display] = lookupCount(cachedScan, item.lookup)
+	end
+
+	local seedTotal, sprinkTotal, canTotal = 0, 0, 0
+	for _, item in ipairs(ITEMS) do
+		local c = currentCounts[item.display] or 0
+		if c > 0 then
+			if item.category == "Seeds" then seedTotal += c
+			elseif item.category == "Sprinklers" then sprinkTotal += c
+			elseif item.category == "WateringCans" then canTotal += c end
 		end
 	end
 
-	table.insert(parts, string.format("🌱 Seeds: %d", seedTotal))
-	if #superList > 0 then
-		table.insert(parts, "⭐ " .. table.concat(superList, ", "))
-	else
-		table.insert(parts, "⭐ Super: -")
-	end
-
-	return table.concat(parts, "\n")
+	return string.format(
+		"🌱 %d  💧 %d  🚿 %d\nTotal items: %d",
+		seedTotal, sprinkTotal, canTotal, seedTotal + sprinkTotal + canTotal
+	)
 end
 
 local function render()
@@ -432,7 +414,7 @@ local function refresh()
 	render()
 end
 
--- Buat tombol kategori
+-- Buat tombol kategori (cuma visual, tidak filter kirim)
 for i, cat in ipairs(CATEGORIES) do
 	local cBtn = Instance.new("TextButton")
 	cBtn.Size = UDim2.new(0, 0, 1, 0)
@@ -459,12 +441,11 @@ for i, cat in ipairs(CATEGORIES) do
 		for name, btn in pairs(catButtons) do
 			btn.BackgroundColor3 = (name == currentCategory) and COLORS.active or COLORS.inactive
 		end
-		render()
-		task.spawn(refresh)
+		-- cuma visual, tidak mempengaruhi SEND
 	end)
 end
 
--- Preset selector: klik = ganti user berikutnya
+-- Preset selector
 presetBtn.MouseButton1Click:Connect(function()
 	local idx = 1
 	for i, u in ipairs(USERNAME_PRESETS) do
@@ -482,13 +463,13 @@ presetBtn.MouseLeave:Connect(function()
 	presetBtn.TextColor3 = COLORS.textDim
 end)
 
--- ===== SEND ACTION =====
+-- ===== SEND ACTION (BATCH ALL) =====
 local function flashSend(text, color, duration)
 	sendBtn.Text = text
 	sendBtn.BackgroundColor3 = color
 	sendBtn.Active = false
 	task.delay(duration or 1.5, function()
-		sendBtn.Text = "SEND"
+		sendBtn.Text = "SEND ALL"
 		sendBtn.BackgroundColor3 = COLORS.green
 		sendBtn.Active = true
 	end)
@@ -497,16 +478,8 @@ end
 sendBtn.MouseButton1Click:Connect(function()
 	refresh()
 
-	local sendItems = {}
-	for _, item in ipairs(getItemsByCategory(currentCategory)) do
-		local count = currentCounts[item.display] or 0
-		if count > 0 then
-			table.insert(sendItems, {
-				name = item.name,
-				count = math.min(count, 255),
-			})
-		end
-	end
+	-- Ambil SEMUA item dari SEMUA kategori
+	local sendItems = collectAllSendItems()
 
 	if #sendItems == 0 then
 		flashSend("Gak ada item", COLORS.red)
@@ -523,12 +496,8 @@ sendBtn.MouseButton1Click:Connect(function()
 			return
 		end
 
-		local payload
-		if #sendItems == 1 then
-			payload = buildSinglePayload(targetId, sendItems[1].name, sendItems[1].count, currentCategory)
-		else
-			payload = buildMultiPayload(targetId, sendItems, currentCategory)
-		end
+		-- 1 payload untuk semua kategori
+		local payload = buildMultiPayload(targetId, sendItems)
 
 		local ok = pcall(function() remote:FireServer(payload) end)
 
