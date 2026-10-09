@@ -20,12 +20,16 @@ local GEAR_LIST = {
 	"Super Cider Sprinkler",
 	"Rare Magic Mail",
 	"Legendary Magic Mail",
+	"Super Magic Mail",
 	"Candy Basket",
 	"Cauldron Charm",
+	"Bat Charm",
 	"Trowel",
 }
 
 local SEED_LIST = {
+	"Spirit Venom Spitter",
+	"Spirit Venus Fly Trap",
 	"Spirit Carrot",
 	"Spirit Tulip",
 	"Great Pumpkin",
