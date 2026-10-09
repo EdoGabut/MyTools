@@ -1,5 +1,6 @@
 -- ============================================================
 -- FARM PUMPKIN + MONSTER + GUARD + NIGHT/DAY CYCLE
+-- (tanpa GUI killer)
 -- ============================================================
 local Players            = game:GetService("Players")
 local RunService         = game:GetService("RunService")
@@ -57,9 +58,6 @@ local CONFIG = {
     E_TIMES         = 2,
     E_GAP           = 1,
     E_HOLD          = 0.1,
-
-    -- ===== GUI Kill =====
-    KILL_GUI_NAME = "WitchCauldron",
 
     -- ===== Clear Map =====
     CLEAR_MAP = {
@@ -773,35 +771,6 @@ local function doNightAction()
 end
 
 -- ============================================================
--- GUI KILLER
--- ============================================================
-local function startGuiKiller()
-    local targetName = CONFIG.KILL_GUI_NAME
-
-    local function bindKill(target)
-        if not target then return end
-        target.Enabled = false
-        target:GetPropertyChangedSignal("Enabled"):Connect(function()
-            if target.Enabled then target.Enabled = false end
-        end)
-    end
-
-    task.spawn(function()
-        local target = player.PlayerGui:FindFirstChild(targetName)
-        if target then bindKill(target) end
-
-        player.PlayerGui.ChildAdded:Connect(function(child)
-            if child.Name == targetName then
-                task.wait(0.05)
-                bindKill(child)
-            end
-        end)
-    end)
-
-    log("🚫 GUI killer aktif: " .. targetName)
-end
-
--- ============================================================
 -- PHASE WATCHER
 -- ============================================================
 local phaseConn = nil
@@ -964,6 +933,5 @@ end)
 -- EXECUTE
 -- ============================================================
 runClearMapOnce()
-startGuiKiller()
 _G.__SetToggle(false)
 log("Loaded | toggle ON/OFF di kanan layar")
