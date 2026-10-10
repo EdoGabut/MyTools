@@ -26,6 +26,8 @@ local ITEMS = {
 	{ display = "Rainbow",       name = "Rainbow",       lookup = "Rainbow Seed",       category = "Seeds" },
 	{ display = "Great Pumpkin", name = "Great Pumpkin", lookup = "Great Pumpkin Seed", category = "Seeds" },
 	{ display = "Vampire Bloom", name = "Vampire Bloom", lookup = "Vampire Bloom Seed", category = "Seeds" },
+	{ display = "Spirit Venom Spitter", name = "Spirit Venom Spitter", lookup = "Spirit Venom Spitter Seed", category = "Seeds" },
+	{ display = "Spirit Venus Fly Trap", name = "Spirit Venus Fly Trap", lookup = "Spirit Venus Fly Trap Seed", category = "Seeds" },
 	-- SPRINKLERS
 	{ display = "Common Cider Sprinkler",    name = "Common Cider Sprinkler",    lookup = "Common Cider Sprinkler",    category = "Sprinklers" },
 	{ display = "Uncommon Cider Sprinkler",  name = "Uncommon Cider Sprinkler",  lookup = "Uncommon Cider Sprinkler",  category = "Sprinklers" },
