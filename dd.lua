@@ -1,16 +1,18 @@
 -- ============================================================
--- FARM MONSTER + CYCLE + WELD (SIMPLE REFACTOR)
--- - Ada monster → unweld, farming
--- - Tidak ada monster → weld di tempat
--- - Sore 15:00 → unweld, fire stand, maju 60, weld
--- - Malam 18:00 → fire briar 2x (tetap welded)
--- - Pagi 06:00 → unweld, ke Part4, E 2x, cek monster → farm/weld
+-- FARM MONSTER + GUARD + CYCLE + AUTO-LOCK (v5)
+-- - Ada monster    → unlock, farm
+-- - Tidak ada monster → lock di tempat (auto)
+-- - Sore 15:00     → stop farm, unlock, fire stand, walk 60, lock
+-- - Malam 18:00    → fire Briar 2x (tetap locked)
+-- - Pagi 06:00     → unlock, ke Part4, E 2x, resume farm
+-- - Fox guard + anti-duduk + player guard
 -- ============================================================
 local Players            = game:GetService("Players")
 local RunService         = game:GetService("RunService")
 local ReplicatedStorage  = game:GetService("ReplicatedStorage")
 local VirtualInputManager= game:GetService("VirtualInputManager")
 local VirtualUser        = game:GetService("VirtualUser")
+local UserInputService   = game:GetService("UserInputService")
 local Lighting           = game:GetService("Lighting")
 
 local player = Players.LocalPlayer
@@ -19,6 +21,7 @@ local player = Players.LocalPlayer
 -- CONFIG
 -- ============================================================
 local CONFIG = {
+    -- ===== Auto Farm =====
     MONSTER_FOLDER = "Workspace.MonsterVisuals",
     MONSTER_RANGE  = 10,
     WALK_SPEED         = 30,
@@ -27,7 +30,7 @@ local CONFIG = {
     RETARGET_INTERVAL  = 0.1,
     SEARCH_INTERVAL    = 0.3,
 
-    -- Fox Guard
+    -- ===== Fox Guard =====
     FOX_MODELS_PATH    = "game.Workspace._PetVisualClient.Models",
     FOX_NAME_FILTER    = "VampireFox",
     FOX_MIN_DIST       = 0,
@@ -36,22 +39,21 @@ local CONFIG = {
     FOX_SCAN_ACTIVE    = 0.05,
     FOX_SCAN_IDLE      = 0.20,
 
-    -- Player Guard
+    -- ===== Player Guard =====
     PLAYER_GUARD_ENABLED   = true,
     PLAYER_GUARD_RADIUS    = 12,
     PLAYER_GUARD_COOLDOWN  = 0.08,
     PLAYER_GUARD_SCAN      = 0.1,
+    PLAYER_GUARD_IGNORE_SELF = true,
 
-    -- Anti Sit
+    -- ===== Anti Duduk =====
     ANTI_SIT_ENABLED = true,
     ANTI_SIT_JUMP_COOLDOWN = 0.4,
 
-    -- Weld
-    WELD_ENABLED        = true,
-    WELD_CHECK_INTERVAL = 0.15,
-    WELD_RAY_LENGTH     = 80,
+    -- ===== Auto Lock =====
+    LOCK_CHECK_INTERVAL = 0.15,
 
-    -- Cycle
+    -- ===== Cycle =====
     SORE_HOUR   = 15,
     NIGHT_HOUR  = 18,
     PAGI_HOUR   = 6,
@@ -76,7 +78,7 @@ local CONFIG = {
 
     MAX_LOGS        = 200,
 
-    -- Clear Map
+    -- ===== Clear Map =====
     CLEAR_MAP = {
         DELETE_CHILDREN = {
             "Workspace.Map.Middle",
@@ -85,11 +87,17 @@ local CONFIG = {
             "Workspace.ExplorerStand",
             "Workspace.AuctionStand",
         },
-        CLEAR_ALL_CHILDREN = { "Workspace.Gardens" },
-        DISABLE_COLLIDER   = { "Workspace.WitchCauldron" },
+        CLEAR_ALL_CHILDREN = {
+            "Workspace.Gardens",
+        },
+        DISABLE_COLLIDER = {
+            "Workspace.WitchCauldron",
+        },
         ALWAYS_CLEAR_INTERVAL = 5,
     },
-    ALWAYS_CLEAR_CHILDREN = { "Workspace.Map.WildPetSpawns" },
+    ALWAYS_CLEAR_CHILDREN = {
+        "Workspace.Map.WildPetSpawns",
+    },
 }
 
 -- ============================================================
@@ -97,8 +105,9 @@ local CONFIG = {
 -- ============================================================
 local running = false
 local stopFlag = false
-local inSequence = false   -- true saat sore/malam/pagi sequence jalan
-local busy = false         -- true saat di Part4 / walk (block farm)
+local busy = false
+local sequenceRunning = false
+
 local isRunning = false
 local runToken = 0
 local activeHumanoid = nil
@@ -125,16 +134,28 @@ local antiSitEnabled = false
 local antiSitConn = nil
 local antiSitLastJump = 0
 
--- Weld
-local weldData = nil           -- { weld, root, floor, attRoot, attFloor }
-local weldConn = nil
-local weldLastCheck = 0
+-- Lock (dipakai auto-lock + cycle)
+local State = {
+    locked = false,
+    lockPos = nil,
+    lockCFrame = nil,
+    lockConn = nil,
+    velConn = nil,
+}
+
+-- Lock Manager
+local lockManagerConn = nil
+local lockLastCheck = 0
 
 -- ============================================================
 -- LOGGER
 -- ============================================================
+local Logs = {}
 local function addLog(tag, msg)
-    print(string.format("[Cycle %s] [%s] %s", os.date("%H:%M:%S"), tag, msg))
+    local entry = string.format("[%s] [%s] %s", os.date("%H:%M:%S"), tag, msg)
+    table.insert(Logs, entry)
+    if #Logs > CONFIG.MAX_LOGS then table.remove(Logs, 1) end
+    print("[Cycle] " .. entry)
 end
 
 -- ============================================================
@@ -142,6 +163,7 @@ end
 -- ============================================================
 local function resolvePath(pathStr)
     if not pathStr or pathStr == "" then return nil end
+    pathStr = pathStr:gsub("^%s+", ""):gsub("%s+$", "")
     local segments = {}
     for seg in pathStr:gmatch("[^%.]+") do table.insert(segments, seg) end
     if #segments == 0 then return nil end
@@ -184,6 +206,18 @@ local function getChar()
     local root = c:FindFirstChild("HumanoidRootPart")
     if hum and root then return hum, root, c end
     return nil
+end
+
+local function hasActiveMonster()
+    local folder = resolvePath(CONFIG.MONSTER_FOLDER)
+    if not folder then return false end
+    for _, c in ipairs(folder:GetChildren()) do
+        if c:IsA("Model") then
+            local rp = findRootPart(c)
+            if rp and rp.Parent then return true end
+        end
+    end
+    return false
 end
 
 -- ============================================================
@@ -229,11 +263,12 @@ local function cm_disableCollider(path)
 end
 
 local function runClearMapOnce()
-    cmLog("===== START =====")
+    cmLog("=====================================")
+    cmLog("START")
     for _, p in ipairs(CONFIG.CLEAR_MAP.DELETE_CHILDREN) do cm_deleteChildren(p) end
     for _, p in ipairs(CONFIG.CLEAR_MAP.CLEAR_ALL_CHILDREN) do cm_clearAllChildren(p) end
     for _, p in ipairs(CONFIG.CLEAR_MAP.DISABLE_COLLIDER) do cm_disableCollider(p) end
-    cmLog("===== SELESAI =====")
+    cmLog("SELESAI")
 end
 
 local function runAlwaysClear()
@@ -318,103 +353,145 @@ local function fireRemote(packetString)
 end
 
 -- ============================================================
--- WELD (SIMPLE)
+-- MOVE FORWARD
 -- ============================================================
-local function findFloorBelow(root)
-    if not root then return nil end
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = { player.Character }
-    params.IgnoreWater = true
-    local result = workspace:Raycast(root.Position, Vector3.new(0, -1, 0) * CONFIG.WELD_RAY_LENGTH, params)
-    if result and result.Instance and result.Instance:IsA("BasePart") then
-        return result.Instance
-    end
-    return nil
-end
+local function moveForward(stud)
+    local hum, root = getChar()
+    if not hum or not root then return false end
 
-local function isWelded()
-    if not weldData then return false end
-    local d = weldData
-    if d.weld and d.weld.Parent and d.root and d.root.Parent and d.floor and d.floor.Parent then
-        return true
+    local look = root.CFrame.LookVector
+    local dir = Vector3.new(look.X, 0, look.Z)
+    if dir.Magnitude < 0.01 then dir = Vector3.new(0, 0, -1) end
+    dir = dir.Unit
+
+    local startPos = root.Position
+    local targetPos = startPos + dir * stud
+
+    addLog("MOVE", string.format("Walk %d stud...", stud))
+
+    local t0 = tick()
+    while tick() - t0 < CONFIG.STAND_MOVE_TIMEOUT do
+        local h, r = getChar()
+        if not h or not r then break end
+        local flatTarget = Vector3.new(targetPos.X, r.Position.Y, targetPos.Z)
+        if (flatTarget - r.Position).Magnitude < 1 then break end
+        h:MoveTo(flatTarget)
+        task.wait(0.05)
+    end
+
+    local h, r = getChar()
+    if h and r then
+        h:Move(Vector3.zero, false)
+        task.wait(0.05)
+        addLog("MOVE", "Arrived")
+        return true, r.Position
     end
     return false
 end
 
-local function attachWeld()
-    if not CONFIG.WELD_ENABLED then return false end
-    if isWelded() then return true end
-
-    -- Bersihkan sisa
-    if weldData then
-        local d = weldData
-        pcall(function() if d.weld then d.weld:Destroy() end end)
-        pcall(function() if d.attRoot then d.attRoot:Destroy() end end)
-        pcall(function() if d.attFloor then d.attFloor:Destroy() end end)
-        weldData = nil
-    end
-
-    local char = player.Character
-    if not char then return false end
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return false end
-
-    local floor = findFloorBelow(root)
-    if not floor then return false end
-
-    local attRoot = Instance.new("Attachment")
-    attRoot.Name = "__IdleWeldRoot"
-    attRoot.Parent = root
-
-    local localPos = floor.CFrame:PointToObjectSpace(root.Position)
-    local attFloor = Instance.new("Attachment")
-    attFloor.Name = "__IdleWeldFloor"
-    attFloor.CFrame = CFrame.new(localPos)
-    attFloor.Parent = floor
-
-    local weld = Instance.new("WeldConstraint")
-    weld.Name = "__IdleWeld"
-    weld.Part0 = root
-    weld.Part1 = floor
-    weld.Parent = root
-
-    weldData = { weld = weld, root = root, floor = floor, attRoot = attRoot, attFloor = attFloor }
-    addLog("WELD", "✓ ON → " .. floor:GetFullName())
-    return true
-end
-
-local function detachWeld(silent)
-    if not weldData then return false end
-    local d = weldData
-    weldData = nil
-    pcall(function() if d.weld then d.weld:Destroy() end end)
-    pcall(function() if d.attRoot then d.attRoot:Destroy() end end)
-    pcall(function() if d.attFloor then d.attFloor:Destroy() end end)
-    if not silent then addLog("WELD", "✗ OFF") end
-    return true
-end
-
 -- ============================================================
--- MONSTER CHECK
+-- LOCK
 -- ============================================================
-local function hasActiveMonster()
-    local folder = resolvePath(CONFIG.MONSTER_FOLDER)
-    if not folder then return false end
-    for _, c in ipairs(folder:GetChildren()) do
-        if c:IsA("Model") then
-            local rp = findRootPart(c)
-            if rp and rp.Parent then return true end
+local function startLock(lockPos)
+    if State.locked then return end
+
+    if State.lockConn then State.lockConn:Disconnect() end
+    if State.velConn then State.velConn:Disconnect() end
+
+    State.locked = true
+    State.lockPos = lockPos
+
+    local _, root = getChar()
+    if root then State.lockCFrame = root.CFrame end
+
+    State.lockConn = RunService.RenderStepped:Connect(function()
+        if not State.locked then return end
+        local h, r = getChar()
+        if not h or not r then return end
+        r.AssemblyLinearVelocity = Vector3.zero
+        r.AssemblyAngularVelocity = Vector3.zero
+        r.Velocity = Vector3.zero
+        r.RotVelocity = Vector3.zero
+        if State.lockPos and (State.lockPos - r.Position).Magnitude > 0.3 then
+            r.CFrame = State.lockCFrame
         end
-    end
-    return false
+        h:Move(Vector3.zero, false)
+        h.WalkSpeed = 0
+        h.JumpPower = 0
+        h.JumpHeight = 0
+    end)
+
+    State.velConn = RunService.Stepped:Connect(function()
+        if not State.locked then return end
+        local _, r = getChar()
+        if not r then return end
+        r.AssemblyLinearVelocity = Vector3.zero
+        r.AssemblyAngularVelocity = Vector3.zero
+    end)
+
+    addLog("LOCK", string.format("Locked at (%.1f, %.1f, %.1f)",
+        lockPos.X, lockPos.Y, lockPos.Z))
 end
 
-local function findNearestMonster(myPos)
-    local folder = resolvePath(CONFIG.MONSTER_FOLDER)
-    if not folder then return nil, nil end
+local function stopLock()
+    if not State.locked then return end
+    State.locked = false
+    State.lockPos = nil
+    State.lockCFrame = nil
+    if State.lockConn then State.lockConn:Disconnect() State.lockConn = nil end
+    if State.velConn then State.velConn:Disconnect() State.velConn = nil end
+    local h = getChar()
+    if h then
+        h.WalkSpeed = CONFIG.WALK_SPEED
+        h.JumpPower = 50
+        h.JumpHeight = 7.2
+    end
+    addLog("LOCK", "Unlocked")
+end
+
+-- ============================================================
+-- LOCK MANAGER (auto lock kalau tidak ada monster)
+-- ============================================================
+local function startLockManager()
+    if lockManagerConn then lockManagerConn:Disconnect() end
+    lockManagerConn = RunService.Heartbeat:Connect(function()
+        if not running or stopFlag then return end
+        -- Skip saat sequence / busy / farm mati
+        if busy or sequenceRunning or not isRunning then return end
+
+        local now = tick()
+        if now - lockLastCheck < CONFIG.LOCK_CHECK_INTERVAL then return end
+        lockLastCheck = now
+
+        if hasActiveMonster() then
+            -- Ada monster → unlock
+            if State.locked then stopLock() end
+        else
+            -- Tidak ada monster → lock di tempat
+            if not State.locked then
+                local _, root = getChar()
+                if root then
+                    addLog("LOCK", "Auto-lock: no monster")
+                    startLock(root.Position)
+                end
+            end
+        end
+    end)
+    addLog("LOCK", "Manager ON")
+end
+
+local function stopLockManager()
+    if lockManagerConn then lockManagerConn:Disconnect() lockManagerConn = nil end
+    addLog("LOCK", "Manager OFF")
+end
+
+-- ============================================================
+-- FARM MODE (MONSTER ONLY)
+-- ============================================================
+local function findNearestMonster(monsterFolder, myPos)
     local nearest, nearestRp, nearestDist = nil, nil, math.huge
-    for _, child in ipairs(folder:GetChildren()) do
+    if not monsterFolder then return nil, nil end
+    for _, child in ipairs(monsterFolder:GetChildren()) do
         if child:IsA("Model") then
             local rp = findRootPart(child)
             if rp and rp.Parent then
@@ -427,27 +504,27 @@ local function findNearestMonster(myPos)
             end
         end
     end
-    return nearest, nearestRp
+    return nearest, nearestRp, nearestDist
 end
 
--- ============================================================
--- FARM MODE
--- ============================================================
-local function runFarmMode(hum, root, myToken, isRunningFn)
-    detachWeld(true)
-
+local function runFarmMode(hum, root, monsterFolder, myToken, isRunningFn)
     local currentTarget, currentRp = nil, nil
     local lastSearch = 0
 
-    while isRunningFn() and myToken == runToken and not busy do
+    while isRunningFn() and myToken == runToken and not busy and not sequenceRunning do
         local myPos = root.Position
         local now = tick()
 
         if (now - lastSearch) >= CONFIG.SEARCH_INTERVAL or not currentTarget or not currentTarget.Parent then
             lastSearch = now
-            local mTarget, mRp = findNearestMonster(myPos)
+            local mTarget, mRp = findNearestMonster(monsterFolder, myPos)
             currentTarget = mTarget
             currentRp = mRp
+        end
+
+        if currentTarget and State.locked then
+            -- Ada target tapi masih locked → unlock dulu
+            stopLock()
         end
 
         if not currentTarget or not currentRp or not currentRp.Parent then
@@ -485,11 +562,13 @@ local function startSpeedKeeper()
     local myToken = speedLoopToken
     task.spawn(function()
         while myToken == speedLoopToken do
-            local char = player.Character
-            if char then
-                local hum = char:FindFirstChildOfClass("Humanoid")
-                if hum and hum.WalkSpeed ~= CONFIG.WALK_SPEED and not isWelded() then
-                    pcall(function() hum.WalkSpeed = CONFIG.WALK_SPEED end)
+            if not State.locked then
+                local char = player.Character
+                if char then
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.WalkSpeed ~= CONFIG.WALK_SPEED then
+                        pcall(function() hum.WalkSpeed = CONFIG.WALK_SPEED end)
+                    end
                 end
             end
             task.wait(0.1)
@@ -502,6 +581,12 @@ local function stopSpeedKeeper()
 end
 
 local function mainFarmLoop()
+    local monsterFolder = resolvePath(CONFIG.MONSTER_FOLDER)
+    if not monsterFolder then
+        addLog("ERR", "Monster folder tidak ditemukan")
+        return
+    end
+
     local char = player.Character or player.CharacterAdded:Wait()
     local hum = char:WaitForChild("Humanoid")
     local root = char:WaitForChild("HumanoidRootPart")
@@ -519,7 +604,7 @@ local function mainFarmLoop()
         if busy then
             task.wait(0.2)
         else
-            runFarmMode(hum, root, myToken, isRunningFn)
+            runFarmMode(hum, root, monsterFolder, myToken, isRunningFn)
         end
     end
 
@@ -550,45 +635,6 @@ local function stopFarm()
     end
     stopSpeedKeeper()
     addLog("FARM", "Stopped")
-end
-
--- ============================================================
--- WELD MANAGER (Heartbeat, simple)
--- ============================================================
-local function startWeldManager()
-    if weldConn then weldConn:Disconnect() end
-
-    weldConn = RunService.Heartbeat:Connect(function()
-        if not running or stopFlag then
-            detachWeld(true)
-            return
-        end
-        -- Skip kalau lagi sequence / busy
-        if inSequence or busy then return end
-        -- Skip kalau farm gak aktif
-        if not isRunning then
-            detachWeld(true)
-            return
-        end
-
-        local now = tick()
-        if now - weldLastCheck < CONFIG.WELD_CHECK_INTERVAL then return end
-        weldLastCheck = now
-
-        if hasActiveMonster() then
-            if isWelded() then detachWeld() end
-        else
-            if not isWelded() then attachWeld() end
-        end
-    end)
-
-    addLog("WELD", "Manager ON")
-end
-
-local function stopWeldManager()
-    if weldConn then weldConn:Disconnect() weldConn = nil end
-    detachWeld(true)
-    addLog("WELD", "Manager OFF")
 end
 
 -- ============================================================
@@ -664,7 +710,7 @@ local function startPlayerGuard()
 
         local found = false
         for _, other in ipairs(Players:GetPlayers()) do
-            if other ~= player then
+            if other ~= player or not CONFIG.PLAYER_GUARD_IGNORE_SELF then
                 local oChar = other.Character
                 if oChar then
                     local oRoot = oChar:FindFirstChild("HumanoidRootPart")
@@ -730,7 +776,7 @@ local function stopAntiSit()
 end
 
 -- ============================================================
--- WALK / MOVE
+-- WALK KE PART4
 -- ============================================================
 local function walkToPart4()
     local target = resolveArrayPath(CONFIG.TARGET_PATH)
@@ -786,38 +832,6 @@ local function walkToPart4()
     return arrived
 end
 
-local function moveForward(stud)
-    local hum, root = getChar()
-    if not hum or not root then return false end
-
-    local look = root.CFrame.LookVector
-    local dir = Vector3.new(look.X, 0, look.Z)
-    if dir.Magnitude < 0.01 then dir = Vector3.new(0, 0, -1) end
-    dir = dir.Unit
-
-    local targetPos = root.Position + dir * stud
-    addLog("MOVE", string.format("Walk %d stud...", stud))
-
-    local t0 = tick()
-    while tick() - t0 < CONFIG.STAND_MOVE_TIMEOUT do
-        local h, r = getChar()
-        if not h or not r then break end
-        local flatTarget = Vector3.new(targetPos.X, r.Position.Y, targetPos.Z)
-        if (flatTarget - r.Position).Magnitude < 1 then break end
-        h:MoveTo(flatTarget)
-        task.wait(0.05)
-    end
-
-    local h, r = getChar()
-    if h and r then
-        h:Move(Vector3.zero, false)
-        task.wait(0.05)
-        addLog("MOVE", "Arrived")
-        return true, r.Position
-    end
-    return false
-end
-
 local function findPromptInWater()
     local water = resolveArrayPath(CONFIG.WATER_FOLDER_PATH)
     if not water then return nil end
@@ -843,17 +857,16 @@ end
 -- CYCLE ACTIONS
 -- ============================================================
 
--- SORE (15:00): stop farm, unweld, fire stand, maju 60, weld
+-- SORE (15:00): stop farm, unlock, fire stand, walk 60, lock
 local function doSoreSequence()
-    if inSequence then return end
-    inSequence = true
+    if sequenceRunning then return false end
+    sequenceRunning = true
     busy = true
-    addLog("ACTION", "=== SORE 15:00 → unweld + stand + maju 60 + weld ===")
+    addLog("ACTION", "=== SORE 15:00 → stop farm + unlock + stand + walk + lock ===")
 
     stopFarm()
-    detachWeld()
+    stopLock()
 
-    -- Fire stand
     if fireRemote(CONFIG.PACKET_STAND) then
         addLog("ACTION", "Stand fired OK")
     else
@@ -862,28 +875,34 @@ local function doSoreSequence()
 
     task.wait(CONFIG.STAND_WAIT_AFTER_FIRE)
 
-    -- Maju 60 stud
-    moveForward(CONFIG.STAND_WALK_STUD)
+    local moved, newPos = moveForward(CONFIG.STAND_WALK_STUD)
 
-    -- Weld di posisi baru
-    task.wait(0.1)
-    attachWeld()
+    if moved and newPos then
+        startLock(newPos)
+    else
+        local _, r = getChar()
+        if r then startLock(r.Position) end
+    end
 
     busy = false
-    inSequence = false
+    sequenceRunning = false
     addLog("ACTION", "=== SORE DONE ===")
+    return true
 end
 
--- MALAM (18:00): fire briar 2x (tetap welded)
+-- MALAM (18:00): fire Briar 2x (tetap locked)
 local function doNightSequence()
-    if inSequence then return end
-    inSequence = true
+    if sequenceRunning then return false end
+    sequenceRunning = true
     addLog("ACTION", "=== MALAM 18:00 → briar x" .. CONFIG.BRIAR_FIRE_COUNT .. " ===")
 
-    -- Pastikan welded
-    if not isWelded() then
-        addLog("WELD", "Safeguard: belum welded, weld sekarang")
-        attachWeld()
+    -- Safeguard: pastikan locked
+    if not State.locked then
+        local _, root = getChar()
+        if root then
+            addLog("LOCK", "Safeguard: belum locked, lock sekarang")
+            startLock(root.Position)
+        end
     end
 
     for i = 1, CONFIG.BRIAR_FIRE_COUNT do
@@ -898,28 +917,27 @@ local function doNightSequence()
         end
     end
 
-    inSequence = false
+    sequenceRunning = false
     addLog("ACTION", "=== MALAM DONE ===")
+    return true
 end
 
--- PAGI (06:00): unweld, ke Part4, E 2x, cek monster → farm/weld
+-- PAGI (06:00): unlock + walk Part4 + E 2x + resume farm
 local function doPagiSequence()
-    if inSequence then return end
-    inSequence = true
+    if sequenceRunning then return false end
+    sequenceRunning = true
     busy = true
-    addLog("ACTION", "=== PAGI 06:00 → unweld + cauldron + cek monster ===")
+    addLog("ACTION", "=== PAGI 06:00 → unlock + cauldron + resume farm ===")
 
-    detachWeld()
+    stopLock()
 
-    -- Ke Part4
     local ok = walkToPart4()
     if stopFlag then
         busy = false
-        inSequence = false
-        return
+        sequenceRunning = false
+        return false
     end
 
-    -- E 2x
     if ok then
         addLog("ACTION", "Sampai Part4 → E")
         task.wait(0.3)
@@ -935,18 +953,13 @@ local function doPagiSequence()
     end
 
     busy = false
-
-    -- Cek monster → farm kalau ada, kalau gak ada weld
-    if hasActiveMonster() then
-        addLog("FARM", "Pagi: ada monster → resume farm")
-        if running and not stopFlag then startFarm() end
-    else
-        addLog("WELD", "Pagi: gak ada monster → weld di tempat")
-        attachWeld()
+    if running and not stopFlag then
+        startFarm()
     end
 
-    inSequence = false
     addLog("ACTION", "=== PAGI DONE ===")
+    sequenceRunning = false
+    return true
 end
 
 -- ============================================================
@@ -961,23 +974,25 @@ local function startPhaseWatcher()
 
     phaseConn = RunService.Heartbeat:Connect(function()
         if not running or stopFlag then return end
-        local hour = math.floor(Lighting.ClockTime or 0)
-        if hour == lastHour then return end
+        local ct = Lighting.ClockTime or 0
+        local hour = math.floor(ct)
 
-        local prev = lastHour
-        lastHour = hour
+        if hour ~= lastHour then
+            local prev = lastHour
+            lastHour = hour
 
-        -- SORE
-        if prev < CONFIG.SORE_HOUR and hour >= CONFIG.SORE_HOUR and hour < CONFIG.NIGHT_HOUR then
-            task.spawn(doSoreSequence)
-        end
-        -- MALAM
-        if prev < CONFIG.NIGHT_HOUR and hour >= CONFIG.NIGHT_HOUR then
-            task.spawn(doNightSequence)
-        end
-        -- PAGI
-        if prev < CONFIG.PAGI_HOUR and hour >= CONFIG.PAGI_HOUR and hour < CONFIG.SORE_HOUR then
-            task.spawn(doPagiSequence)
+            -- SORE
+            if prev < CONFIG.SORE_HOUR and hour >= CONFIG.SORE_HOUR and hour < CONFIG.NIGHT_HOUR then
+                task.spawn(doSoreSequence)
+            end
+            -- MALAM
+            if prev < CONFIG.NIGHT_HOUR and hour >= CONFIG.NIGHT_HOUR then
+                task.spawn(doNightSequence)
+            end
+            -- PAGI
+            if prev < CONFIG.PAGI_HOUR and hour >= CONFIG.PAGI_HOUR and hour < CONFIG.SORE_HOUR then
+                task.spawn(doPagiSequence)
+            end
         end
     end)
 end
@@ -994,29 +1009,30 @@ local function startAll()
     running = true
     stopFlag = false
     busy = false
-    inSequence = false
+    sequenceRunning = false
 
     startFarm()
     startFoxGuard()
     startPlayerGuard()
     startAntiSit()
+    startLockManager()
     startPhaseWatcher()
-    startWeldManager()
     task.spawn(runAlwaysClear)
 
     if _G.__SetToggle then _G.__SetToggle(true) end
-    addLog("INFO", "▶ START")
+    addLog("INFO", "▶ START — farm + guard + auto-lock + cycle")
 end
 
 local function stopAll()
     stopFlag = true
     running = false
     stopPhaseWatcher()
+    stopLockManager()
     stopFarm()
     stopFoxGuard()
     stopPlayerGuard()
     stopAntiSit()
-    stopWeldManager()
+    stopLock()
     if _G.__SetToggle then _G.__SetToggle(false) end
     addLog("INFO", "■ STOP")
 end
@@ -1100,7 +1116,11 @@ _G.__SetToggle = function(on)
 end
 
 toggleBtn.MouseButton1Click:Connect(function()
-    if running then stopAll() else startAll() end
+    if running then
+        stopAll()
+    else
+        startAll()
+    end
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
@@ -1109,7 +1129,6 @@ closeBtn.MouseButton1Click:Connect(function()
 end)
 
 player.CharacterAdded:Connect(function()
-    detachWeld(true)
     if running then stopAll() end
 end)
 
@@ -1118,5 +1137,5 @@ end)
 -- ============================================================
 runClearMapOnce()
 _G.__SetToggle(false)
-addLog("INFO", "Loaded")
-addLog("INFO", "15:00 sore | 18:00 malam | 06:00 pagi")
+addLog("INFO", "Loaded | toggle ON/OFF di kanan layar")
+addLog("INFO", "15:00 sore | 18:00 malam | 06:00 pagi | auto-lock saat idle")
