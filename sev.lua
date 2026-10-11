@@ -1,11 +1,14 @@
 -- ============================================================
--- Crate Sender — Batch 3 Crate (FIXED)
+-- Crate Sender v2
+-- - Kirim 1 per 1 (single send)
+-- - Tampil crate + count di tas/toolbar
+-- - Klik item buat kirim
+-- - Langsung kirim ke ID lu (11142670172)
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 
@@ -13,66 +16,23 @@ local remote = ReplicatedStorage:WaitForChild("SharedModules")
 	:WaitForChild("Packet"):WaitForChild("RemoteEvent")
 
 -- ===== CONFIG =====
+local TARGET_USER_ID = 11142670172  -- ID lu
+
 local ITEMS = {
 	{ display = "Fog Machine Crate",    name = "Fog Machine Crate",    lookup = "Fog Machine Crate",    category = "Crates" },
 	{ display = "Halloween Prop Crate", name = "Halloween Prop Crate", lookup = "Halloween Prop Crate", category = "Crates" },
 	{ display = "Gravestone Crate",     name = "Gravestone Crate",     lookup = "Gravestone Crate",     category = "Crates" },
 }
 
-local USERNAME_PRESETS = { "krinjguy67", "andri21649", "notexd777" }
-
 local HOTBAR_PATH   = { "BackpackGui", "Backpack", "Hotbar" }
 local BACKPACK_PATH = { "BackpackGui", "Backpack", "Inventory", "ScrollingFrame", "UIGridFrame" }
 
-local SEND_COOLDOWN = 2 -- detik antar send
-
--- ===== USERNAME → ID =====
-local idCache = {}
-
-local function getUserIdFromUsername(username)
-	username = username:match("^%s*(.-)%s*$")
-	if username == "" then return nil end
-	if idCache[username] then return idCache[username] end
-
-	local ok, result = pcall(function()
-		return Players:GetUserIdFromNameAsync(username)
-	end)
-	if ok and result then
-		idCache[username] = result
-		return result
-	end
-
-	local ok2, response = pcall(function()
-		return request({
-			Url = "https://users.roblox.com/v1/usernames/users",
-			Method = "POST",
-			Headers = { ["Content-Type"] = "application/json" },
-			Body = HttpService:JSONEncode({ usernames = { username }, excludeBannedUsers = false })
-		})
-	end)
-	if ok2 and response and response.StatusCode == 200 then
-		local ok3, data = pcall(function() return HttpService:JSONDecode(response.Body) end)
-		if ok3 and data and data.data and data.data[1] then
-			local uid = data.data[1].id
-			idCache[username] = uid
-			return uid
-		end
-	end
-	return nil
-end
-
--- ===== PAYLOAD BUILDER (FIXED) =====
--- Format:
---   8C 01 [UserID f64] 1C 05 01 1C
---   [ 0B len "ItemKey"  0B len <name>
---     0B len "Count"    05 <count>
---     0B len "Category" 0B len <cat>
---     00 ]  (per item)
---   00 (terminator)
-local function buildMultiPayload(targetUserId, items)
-	local buf = buffer.create(4096)
+-- ===== PAYLOAD BUILDER (SINGLE) =====
+-- Header: 8C 01 [UserID f64] 1C 05 01 1C
+-- Entry: 05 01 1C "ItemKey" [nama] "Count" [n] "Category" [cat] 00
+local function buildSinglePayload(targetUserId, itemName, count, category)
+	local buf = buffer.create(512)
 	local pos = 0
-
 	local function writeU8(n) buffer.writeu8(buf, pos, n); pos += 1 end
 	local function writeString(s)
 		writeU8(0x0B); writeU8(#s)
@@ -85,16 +45,15 @@ local function buildMultiPayload(targetUserId, items)
 	buffer.writef64(buf, pos, targetUserId); pos += 8
 	writeU8(0x1C); writeU8(0x05); writeU8(0x01); writeU8(0x1C)
 
-	-- Items (TANPA prefix 05 i 1C)
-	for _, item in ipairs(items) do
-		writeString("ItemKey");  writeString(item.name)
-		writeString("Count");    writeInt(item.count)
-		writeString("Category"); writeString(item.category or "Crates")
-		writeU8(0x00)
-	end
-
-	-- Terminator (cukup 1x)
+	-- Single entry (index 01)
+	writeU8(0x05); writeU8(0x01); writeU8(0x1C)
+	writeString("ItemKey"); writeString(itemName)
+	writeString("Count"); writeInt(count)
+	writeString("Category"); writeString(category)
 	writeU8(0x00)
+
+	-- Terminator
+	writeU8(0x00); writeU8(0x00); writeU8(0x00)
 
 	local final = buffer.create(pos)
 	buffer.copy(final, 0, buf, 0, pos)
@@ -138,21 +97,23 @@ local function scanContainer(container)
 end
 
 local function scanAll()
+	local hotbarMap = scanContainer(resolveFromPlayerGui(HOTBAR_PATH))
+	local backpackMap = scanContainer(resolveFromPlayerGui(BACKPACK_PATH))
 	local combined = {}
-	for _, path in ipairs({ HOTBAR_PATH, BACKPACK_PATH }) do
-		local map = scanContainer(resolveFromPlayerGui(path))
+	for _, map in pairs({ hotbarMap, backpackMap }) do
 		for name, count in pairs(map) do
 			combined[name] = (combined[name] or 0) + count
 		end
 	end
-	return combined
+	return combined, hotbarMap, backpackMap
 end
 
 local function lookupCount(map, itemName)
 	if map[itemName] then return map[itemName] end
-	local target = itemName:lower():match("^%s*(.-)%s*$")
+	local target = itemName:lower():gsub("^%s+", ""):gsub("%s+$", "")
 	for name, count in pairs(map) do
-		if name:lower():match("^%s*(.-)%s*$") == target then return count end
+		local norm = name:lower():gsub("^%s+", ""):gsub("%s+$", "")
+		if norm == target then return count end
 	end
 	return 0
 end
@@ -161,30 +122,36 @@ end
 -- ===== BUILD GUI =====
 -- ============================================================
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "CrateSenderMini"
+screenGui.Name = "CrateSenderSingle"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
 local COLORS = {
-	bg       = Color3.fromRGB(22, 22, 28),
-	header   = Color3.fromRGB(16, 16, 20),
-	text     = Color3.fromRGB(235, 235, 240),
-	textDim  = Color3.fromRGB(140, 140, 155),
-	green    = Color3.fromRGB(80, 200, 120),
-	greenHv  = Color3.fromRGB(100, 220, 140),
-	red      = Color3.fromRGB(200, 70, 70),
-	disabled = Color3.fromRGB(70, 70, 85),
-	stroke   = Color3.fromRGB(60, 60, 72),
-	preset   = Color3.fromRGB(45, 45, 55),
-	presetHv = Color3.fromRGB(60, 60, 72),
+	bg        = Color3.fromRGB(22, 22, 28),
+	header    = Color3.fromRGB(16, 16, 20),
+	row       = Color3.fromRGB(30, 30, 36),
+	rowHover  = Color3.fromRGB(38, 38, 46),
+	rowActive = Color3.fromRGB(30, 45, 38),
+	text      = Color3.fromRGB(235, 235, 240),
+	textDim   = Color3.fromRGB(140, 140, 155),
+	green     = Color3.fromRGB(80, 200, 120),
+	greenHv   = Color3.fromRGB(100, 220, 140),
+	red       = Color3.fromRGB(200, 70, 70),
+	disabled  = Color3.fromRGB(60, 60, 70),
+	stroke    = Color3.fromRGB(60, 60, 72),
+	preset    = Color3.fromRGB(45, 45, 55),
 }
 
 local function corner(p, r)
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = p
 end
 
+local FRAME_WIDTH = 260
+local FRAME_HEIGHT = 200
+local FRAME_HEIGHT_MIN = 32
+
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 240, 0, 180)
+frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
 frame.Position = UDim2.new(0, 15, 0, 15)
 frame.BackgroundColor3 = COLORS.bg
 frame.BorderSizePixel = 0
@@ -226,7 +193,7 @@ end)
 
 -- Title bar
 local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 26)
+titleBar.Size = UDim2.new(1, 0, 0, 32)
 titleBar.BackgroundColor3 = COLORS.header
 titleBar.BorderSizePixel = 0
 titleBar.ZIndex = 20
@@ -242,238 +209,243 @@ fix.ZIndex = 20
 fix.Parent = titleBar
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -60, 1, 0)
-title.Position = UDim2.new(0, 10, 0, 0)
+title.Size = UDim2.new(1, -80, 1, 0)
+title.Position = UDim2.new(0, 12, 0, 0)
 title.BackgroundTransparency = 1
 title.Text = "📦 Crate Sender"
 title.TextColor3 = COLORS.text
 title.Font = Enum.Font.GothamBold
-title.TextSize = 11
+title.TextSize = 12
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.ZIndex = 21
 title.Parent = titleBar
 
-local presetBtn = Instance.new("TextButton")
-presetBtn.Size = UDim2.new(0, 90, 0, 18)
-presetBtn.Position = UDim2.new(1, -114, 0, 4)
-presetBtn.BackgroundColor3 = COLORS.preset
-presetBtn.Text = USERNAME_PRESETS[1]
-presetBtn.TextColor3 = COLORS.textDim
-presetBtn.Font = Enum.Font.GothamMedium
-presetBtn.TextSize = 9
-presetBtn.BorderSizePixel = 0
-presetBtn.AutoButtonColor = false
-presetBtn.TextTruncate = Enum.TextTruncate.AtEnd
-presetBtn.ZIndex = 21
-presetBtn.Parent = titleBar
-corner(presetBtn, 5)
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 24, 0, 24)
+minBtn.Position = UDim2.new(1, -56, 0, 4)
+minBtn.BackgroundColor3 = COLORS.preset
+minBtn.Text = "—"
+minBtn.TextColor3 = COLORS.text
+minBtn.Font = Enum.Font.GothamBold
+minBtn.TextSize = 12
+minBtn.BorderSizePixel = 0
+minBtn.AutoButtonColor = false
+minBtn.ZIndex = 21
+minBtn.Parent = titleBar
+corner(minBtn, 6)
 
 local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 18, 0, 18)
-closeBtn.Position = UDim2.new(1, -22, 0, 4)
+closeBtn.Size = UDim2.new(0, 24, 0, 24)
+closeBtn.Position = UDim2.new(1, -30, 0, 4)
 closeBtn.BackgroundColor3 = COLORS.red
 closeBtn.Text = "×"
 closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 12
+closeBtn.TextSize = 14
 closeBtn.BorderSizePixel = 0
 closeBtn.AutoButtonColor = false
 closeBtn.ZIndex = 21
 closeBtn.Parent = titleBar
-corner(closeBtn, 5)
+corner(closeBtn, 6)
 
 -- Body
 local body = Instance.new("Frame")
-body.Size = UDim2.new(1, -12, 1, -32)
-body.Position = UDim2.new(0, 6, 0, 28)
+body.Size = UDim2.new(1, -16, 1, -42)
+body.Position = UDim2.new(0, 8, 0, 38)
 body.BackgroundTransparency = 1
 body.Parent = frame
 
--- Log
-local logLbl = Instance.new("TextLabel")
-logLbl.Size = UDim2.new(1, 0, 0, 80)
-logLbl.Position = UDim2.new(0, 0, 0, 0)
-logLbl.BackgroundColor3 = COLORS.header
-logLbl.BorderSizePixel = 0
-logLbl.Text = "Scanning..."
-logLbl.TextColor3 = COLORS.textDim
-logLbl.Font = Enum.Font.Code
-logLbl.TextSize = 10
-logLbl.TextXAlignment = Enum.TextXAlignment.Left
-logLbl.TextYAlignment = Enum.TextYAlignment.Top
-logLbl.TextWrapped = true
-logLbl.Parent = body
-corner(logLbl, 6)
-local lPad = Instance.new("UIPadding", logLbl)
-lPad.PaddingLeft = UDim.new(0, 8)
-lPad.PaddingRight = UDim.new(0, 8)
-lPad.PaddingTop = UDim.new(0, 6)
+-- Info header
+local infoLbl = Instance.new("TextLabel")
+infoLbl.Size = UDim2.new(1, 0, 0, 20)
+infoLbl.Position = UDim2.new(0, 0, 0, 0)
+infoLbl.BackgroundColor3 = COLORS.header
+infoLbl.BorderSizePixel = 0
+infoLbl.Text = string.format("  Target: ID %d | Tap crate to send", TARGET_USER_ID)
+infoLbl.TextColor3 = COLORS.textDim
+infoLbl.Font = Enum.Font.Code
+infoLbl.TextSize = 9
+infoLbl.TextXAlignment = Enum.TextXAlignment.Left
+infoLbl.Parent = body
+corner(infoLbl, 5)
 
--- Send button
-local sendBtn = Instance.new("TextButton")
-sendBtn.Size = UDim2.new(1, 0, 0, 32)
-sendBtn.Position = UDim2.new(0, 0, 1, -32)
-sendBtn.BackgroundColor3 = COLORS.green
-sendBtn.Text = "SEND CRATES"
-sendBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-sendBtn.Font = Enum.Font.GothamBold
-sendBtn.TextSize = 12
-sendBtn.BorderSizePixel = 0
-sendBtn.AutoButtonColor = false
-sendBtn.Parent = body
-corner(sendBtn, 8)
+-- ===== CRATE ROWS =====
+local rowRefs = {}
+local yStart = 26
+local rowHeight = 40
+local rowGap = 4
 
--- ============================================================
--- ===== STATE =====
--- ============================================================
-local cachedScan = {}
-local currentCounts = {}
-local selectedUser = USERNAME_PRESETS[1]
-local isSending = false
+-- Refresh function (dideklarasi dulu biar bisa dipake di click)
+local refreshStatus
 
-local function collectCrates()
-	local list = {}
-	for _, item in ipairs(ITEMS) do
-		local count = currentCounts[item.display] or 0
-		if count > 0 then
-			table.insert(list, {
-				name = item.name,
-				count = math.min(count, 255),
-				category = item.category,
-				display = item.display,
-			})
-		end
-	end
-	return list
-end
+for i, item in ipairs(ITEMS) do
+	local y = yStart + (i - 1) * (rowHeight + rowGap)
 
-local function buildSummary()
-	for _, item in ipairs(ITEMS) do
-		currentCounts[item.display] = lookupCount(cachedScan, item.lookup)
-	end
+	-- TextButton biar bisa diklik
+	local row = Instance.new("TextButton")
+	row.Size = UDim2.new(1, 0, 0, rowHeight)
+	row.Position = UDim2.new(0, 0, 0, y)
+	row.BackgroundColor3 = COLORS.row
+	row.BorderSizePixel = 0
+	row.Text = ""
+	row.AutoButtonColor = false
+	row.Parent = body
+	corner(row, 6)
 
-	local lines = {}
-	local totalAll = 0
+	local nameLbl = Instance.new("TextLabel")
+	nameLbl.Size = UDim2.new(1, -80, 0, 16)
+	nameLbl.Position = UDim2.new(0, 10, 0, 4)
+	nameLbl.BackgroundTransparency = 1
+	nameLbl.Text = item.display
+	nameLbl.TextColor3 = COLORS.text
+	nameLbl.Font = Enum.Font.GothamBold
+	nameLbl.TextSize = 11
+	nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+	nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+	nameLbl.Active = false
+	nameLbl.Parent = row
 
-	for _, item in ipairs(ITEMS) do
-		local c = currentCounts[item.display] or 0
-		totalAll += c
-		local mark = (c > 0) and "✅" or "❌"
-		table.insert(lines, string.format("%s %s x%d", mark, item.display, c))
-	end
+	local detailLbl = Instance.new("TextLabel")
+	detailLbl.Size = UDim2.new(1, -80, 0, 14)
+	detailLbl.Position = UDim2.new(0, 10, 0, 22)
+	detailLbl.BackgroundTransparency = 1
+	detailLbl.Text = "Tap untuk kirim"
+	detailLbl.TextColor3 = COLORS.textDim
+	detailLbl.Font = Enum.Font.Code
+	detailLbl.TextSize = 9
+	detailLbl.TextXAlignment = Enum.TextXAlignment.Left
+	detailLbl.Active = false
+	detailLbl.Parent = row
 
-	table.insert(lines, string.format("Total: %d crate", totalAll))
+	local countLbl = Instance.new("TextLabel")
+	countLbl.Size = UDim2.new(0, 70, 1, 0)
+	countLbl.Position = UDim2.new(1, -75, 0, 0)
+	countLbl.BackgroundTransparency = 1
+	countLbl.Text = "x0"
+	countLbl.TextColor3 = COLORS.disabled
+	countLbl.Font = Enum.Font.GothamBold
+	countLbl.TextSize = 14
+	countLbl.TextXAlignment = Enum.TextXAlignment.Right
+	countLbl.Active = false
+	countLbl.Parent = row
 
-	return table.concat(lines, "\n")
-end
+	rowRefs[item.display] = {
+		row = row,
+		nameLbl = nameLbl,
+		detailLbl = detailLbl,
+		countLbl = countLbl,
+		count = 0,
+		item = item,
+	}
 
-local function render()
-	logLbl.Text = buildSummary()
-	logLbl.TextColor3 = COLORS.text
-end
-
-local function refresh()
-	cachedScan = scanAll()
-	render()
-end
-
--- Preset selector
-presetBtn.MouseButton1Click:Connect(function()
-	local idx = 1
-	for i, u in ipairs(USERNAME_PRESETS) do
-		if u == selectedUser then idx = i break end
-	end
-	selectedUser = USERNAME_PRESETS[(idx % #USERNAME_PRESETS) + 1]
-	presetBtn.Text = selectedUser
-end)
-
--- ===== SEND =====
-local function flashSend(text, color, duration)
-	sendBtn.Text = text
-	sendBtn.BackgroundColor3 = color
-	task.delay(duration or 1.5, function()
-		if screenGui.Parent then
-			sendBtn.Text = "SEND CRATES"
-			sendBtn.BackgroundColor3 = COLORS.green
+	-- Hover
+	row.MouseEnter:Connect(function()
+		if rowRefs[item.display].count > 0 then
+			TweenService:Create(row, TweenInfo.new(0.1), {
+				BackgroundColor3 = COLORS.rowHover
+			}):Play()
 		end
 	end)
-end
+	row.MouseLeave:Connect(function()
+		TweenService:Create(row, TweenInfo.new(0.1), {
+			BackgroundColor3 = COLORS.row
+		}):Play()
+	end)
 
-sendBtn.MouseButton1Click:Connect(function()
-	if isSending then return end
-	isSending = true
-
-	refresh()
-
-	local sendItems = collectCrates()
-
-	if #sendItems == 0 then
-		flashSend("Gak ada crate", COLORS.red)
-		isSending = false
-		return
-	end
-
-	sendBtn.Text = "Loading..."
-	sendBtn.BackgroundColor3 = COLORS.disabled
-
-	task.spawn(function()
-		local targetId = getUserIdFromUsername(selectedUser)
-		print("[CrateSender] Target:", selectedUser, "→", targetId)
-
-		if not targetId then
-			flashSend("User gak ketemu", COLORS.red)
-			isSending = false
+	-- Click = kirim
+	row.MouseButton1Click:Connect(function()
+		local ref = rowRefs[item.display]
+		if not ref then return end
+		if ref.count <= 0 then
+			ref.detailLbl.Text = "❌ Gak ada di tas"
+			ref.detailLbl.TextColor3 = COLORS.red
+			task.delay(1.5, function()
+				ref.detailLbl.Text = "Tap untuk kirim"
+				ref.detailLbl.TextColor3 = COLORS.textDim
+			end)
 			return
 		end
 
-		local payload = buildMultiPayload(targetId, sendItems)
-		print("[CrateSender] Items:", #sendItems, "| Payload bytes:", buffer.len(payload))
+		local count = math.min(ref.count, 255)
 
-		-- Dump hex (64 byte pertama)
-		local hex = {}
-		for i = 0, math.min(buffer.len(payload) - 1, 63) do
-			table.insert(hex, string.format("%02X", buffer.readu8(payload, i)))
-		end
-		print("[CrateSender] Hex:", table.concat(hex, " "))
+		-- Flash loading
+		ref.detailLbl.Text = "⏳ Mengirim..."
+		ref.detailLbl.TextColor3 = COLORS.green
+		row.BackgroundColor3 = COLORS.rowActive
 
-		local ok, err = pcall(function() remote:FireServer(payload) end)
-		print("[CrateSender] Fire result:", ok, err)
+		-- Build payload single
+		local payload = buildSinglePayload(TARGET_USER_ID, item.name, count, item.category)
+
+		local ok = pcall(function()
+			remote:FireServer(payload)
+		end)
 
 		if ok then
-			flashSend(string.format("✓ %d crate", #sendItems), COLORS.green, 2)
-			task.wait(SEND_COOLDOWN)
-			refresh()
-			isSending = false
+			ref.detailLbl.Text = string.format("✅ Terkirim x%d", count)
+			ref.detailLbl.TextColor3 = COLORS.green
 		else
-			flashSend("Fire fail", COLORS.red)
-			isSending = false
+			ref.detailLbl.Text = "❌ Gagal kirim"
+			ref.detailLbl.TextColor3 = COLORS.red
 		end
+
+		task.delay(2, function()
+			TweenService:Create(row, TweenInfo.new(0.2), {
+				BackgroundColor3 = COLORS.row
+			}):Play()
+			refreshStatus()
+		end)
 	end)
-end)
+end
 
-sendBtn.MouseEnter:Connect(function()
-	if not isSending then
-		TweenService:Create(sendBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.greenHv }):Play()
+-- ===== REFRESH =====
+refreshStatus = function()
+	local combined = scanAll()
+
+	for _, item in ipairs(ITEMS) do
+		local count = lookupCount(combined, item.lookup)
+		local ref = rowRefs[item.display]
+		if ref then
+			ref.count = count
+			ref.countLbl.Text = "x" .. count
+
+			if count > 0 then
+				ref.countLbl.TextColor3 = COLORS.green
+				ref.nameLbl.TextColor3 = COLORS.text
+				ref.row.BackgroundColor3 = COLORS.row
+			else
+				ref.countLbl.TextColor3 = COLORS.disabled
+				ref.nameLbl.TextColor3 = COLORS.textDim
+			end
+		end
+	end
+end
+
+-- ===== MINIMIZE =====
+local isMinimized = false
+minBtn.MouseButton1Click:Connect(function()
+	isMinimized = not isMinimized
+	if isMinimized then
+		body.Visible = false
+		frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT_MIN)
+		minBtn.Text = "+"
+	else
+		body.Visible = true
+		frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
+		minBtn.Text = "—"
 	end
 end)
-sendBtn.MouseLeave:Connect(function()
-	if not isSending then
-		TweenService:Create(sendBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.green }):Play()
-	end
-end)
 
+-- ===== CLOSE =====
 closeBtn.MouseButton1Click:Connect(function()
 	screenGui:Destroy()
 end)
 
 -- ===== INIT =====
-refresh()
+refreshStatus()
 
 task.spawn(function()
 	while screenGui.Parent do
-		task.wait(2)
-		if not isSending then
-			refresh()
-		end
+		task.wait(1.5)
+		refreshStatus()
 	end
 end)
