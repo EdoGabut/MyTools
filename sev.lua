@@ -1,5 +1,5 @@
 -- ============================================================
--- Crate Sender — Batch 3 Crate
+-- Crate Sender — Batch 3 Crate (FIXED)
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -23,6 +23,8 @@ local USERNAME_PRESETS = { "krinjguy67", "andri21649", "notexd777" }
 
 local HOTBAR_PATH   = { "BackpackGui", "Backpack", "Hotbar" }
 local BACKPACK_PATH = { "BackpackGui", "Backpack", "Inventory", "ScrollingFrame", "UIGridFrame" }
+
+local SEND_COOLDOWN = 2 -- detik antar send
 
 -- ===== USERNAME → ID =====
 local idCache = {}
@@ -59,11 +61,18 @@ local function getUserIdFromUsername(username)
 	return nil
 end
 
--- ===== PAYLOAD BUILDER (HEADER FIXED) =====
--- Header: 8C 01 [UserID f64] 1C 05 01 1C
+-- ===== PAYLOAD BUILDER (FIXED) =====
+-- Format:
+--   8C 01 [UserID f64] 1C 05 01 1C
+--   [ 0B len "ItemKey"  0B len <name>
+--     0B len "Count"    05 <count>
+--     0B len "Category" 0B len <cat>
+--     00 ]  (per item)
+--   00 (terminator)
 local function buildMultiPayload(targetUserId, items)
 	local buf = buffer.create(4096)
 	local pos = 0
+
 	local function writeU8(n) buffer.writeu8(buf, pos, n); pos += 1 end
 	local function writeString(s)
 		writeU8(0x0B); writeU8(#s)
@@ -71,22 +80,21 @@ local function buildMultiPayload(targetUserId, items)
 	end
 	local function writeInt(n) writeU8(0x05); writeU8(n) end
 
-	-- Header (FIXED)
+	-- Header
 	writeU8(0x8C); writeU8(0x01)
 	buffer.writef64(buf, pos, targetUserId); pos += 8
 	writeU8(0x1C); writeU8(0x05); writeU8(0x01); writeU8(0x1C)
 
-	-- Items
-	for i, item in ipairs(items) do
-		writeU8(0x05); writeU8(i); writeU8(0x1C)
-		writeString("ItemKey"); writeString(item.name)
-		writeString("Count"); writeInt(item.count)
+	-- Items (TANPA prefix 05 i 1C)
+	for _, item in ipairs(items) do
+		writeString("ItemKey");  writeString(item.name)
+		writeString("Count");    writeInt(item.count)
 		writeString("Category"); writeString(item.category or "Crates")
 		writeU8(0x00)
 	end
 
-	-- Terminator
-	writeU8(0x00); writeU8(0x00); writeU8(0x00)
+	-- Terminator (cukup 1x)
+	writeU8(0x00)
 
 	local final = buffer.create(pos)
 	buffer.copy(final, 0, buf, 0, pos)
@@ -321,6 +329,7 @@ corner(sendBtn, 8)
 local cachedScan = {}
 local currentCounts = {}
 local selectedUser = USERNAME_PRESETS[1]
+local isSending = false
 
 local function collectCrates()
 	local list = {}
@@ -382,55 +391,73 @@ end)
 local function flashSend(text, color, duration)
 	sendBtn.Text = text
 	sendBtn.BackgroundColor3 = color
-	sendBtn.Active = false
 	task.delay(duration or 1.5, function()
-		sendBtn.Text = "SEND CRATES"
-		sendBtn.BackgroundColor3 = COLORS.green
-		sendBtn.Active = true
+		if screenGui.Parent then
+			sendBtn.Text = "SEND CRATES"
+			sendBtn.BackgroundColor3 = COLORS.green
+		end
 	end)
 end
 
 sendBtn.MouseButton1Click:Connect(function()
+	if isSending then return end
+	isSending = true
+
 	refresh()
 
 	local sendItems = collectCrates()
 
 	if #sendItems == 0 then
 		flashSend("Gak ada crate", COLORS.red)
+		isSending = false
 		return
 	end
 
 	sendBtn.Text = "Loading..."
-	sendBtn.Active = false
+	sendBtn.BackgroundColor3 = COLORS.disabled
 
 	task.spawn(function()
 		local targetId = getUserIdFromUsername(selectedUser)
+		print("[CrateSender] Target:", selectedUser, "→", targetId)
+
 		if not targetId then
 			flashSend("User gak ketemu", COLORS.red)
+			isSending = false
 			return
 		end
 
 		local payload = buildMultiPayload(targetId, sendItems)
+		print("[CrateSender] Items:", #sendItems, "| Payload bytes:", buffer.len(payload))
 
-		local ok = pcall(function() remote:FireServer(payload) end)
+		-- Dump hex (64 byte pertama)
+		local hex = {}
+		for i = 0, math.min(buffer.len(payload) - 1, 63) do
+			table.insert(hex, string.format("%02X", buffer.readu8(payload, i)))
+		end
+		print("[CrateSender] Hex:", table.concat(hex, " "))
+
+		local ok, err = pcall(function() remote:FireServer(payload) end)
+		print("[CrateSender] Fire result:", ok, err)
 
 		if ok then
 			flashSend(string.format("✓ %d crate", #sendItems), COLORS.green, 2)
-			task.wait(1.5)
+			task.wait(SEND_COOLDOWN)
 			refresh()
+			isSending = false
 		else
 			flashSend("Fire fail", COLORS.red)
+			isSending = false
 		end
 	end)
 end)
 
 sendBtn.MouseEnter:Connect(function()
-	if sendBtn.Active then
+	if not isSending then
 		TweenService:Create(sendBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.greenHv }):Play()
 	end
 end)
 sendBtn.MouseLeave:Connect(function()
-	if sendBtn.Active then
+	if not isSending then
 		TweenService:Create(sendBtn, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.green }):Play()
 	end
 end)
@@ -445,6 +472,8 @@ refresh()
 task.spawn(function()
 	while screenGui.Parent do
 		task.wait(2)
-		refresh()
+		if not isSending then
+			refresh()
+		end
 	end
 end)
