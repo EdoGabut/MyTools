@@ -1,9 +1,10 @@
 -- ============================================================
--- Crate Tracker
+-- Crate Tracker (FIXED)
 -- Cek jumlah crate di hotbar + backpack
 -- ============================================================
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 
@@ -83,6 +84,7 @@ end
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "CrateTracker"
 screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
 local COLORS = {
@@ -105,6 +107,7 @@ local COLORS = {
 
 local function corner(p, r)
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = p
+	return c
 end
 
 local FRAME_WIDTH = 280
@@ -112,6 +115,7 @@ local FRAME_HEIGHT = 220
 local FRAME_HEIGHT_MIN = 32
 
 local frame = Instance.new("Frame")
+frame.Name = "MainFrame"
 frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
 frame.Position = UDim2.new(0, 15, 0, 15)
 frame.BackgroundColor3 = COLORS.bg
@@ -125,7 +129,7 @@ stroke.Color = COLORS.stroke
 stroke.Transparency = 0.4
 stroke.Parent = frame
 
--- Drag
+-- ===== Drag =====
 local dragging, dragStart, startPos
 frame.InputBegan:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1
@@ -141,7 +145,7 @@ frame.InputEnded:Connect(function(input)
 		dragging = false
 	end
 end)
-game:GetService("UserInputService").InputChanged:Connect(function(input)
+UserInputService.InputChanged:Connect(function(input)
 	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
 		or input.UserInputType == Enum.UserInputType.Touch) then
 		local delta = input.Position - dragStart
@@ -152,8 +156,9 @@ game:GetService("UserInputService").InputChanged:Connect(function(input)
 	end
 end)
 
--- Title bar
+-- ===== Title bar =====
 local titleBar = Instance.new("Frame")
+titleBar.Name = "TitleBar"
 titleBar.Size = UDim2.new(1, 0, 0, 32)
 titleBar.BackgroundColor3 = COLORS.header
 titleBar.BorderSizePixel = 0
@@ -170,7 +175,7 @@ fix.ZIndex = 20
 fix.Parent = titleBar
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -110, 1, 0)
+title.Size = UDim2.new(1, -130, 1, 0)
 title.Position = UDim2.new(0, 12, 0, 0)
 title.BackgroundTransparency = 1
 title.Text = "📦 Crate Tracker"
@@ -181,10 +186,16 @@ title.TextXAlignment = Enum.TextXAlignment.Left
 title.ZIndex = 21
 title.Parent = titleBar
 
+-- ===== Button positions (FIXED - no overlap) =====
+-- Copy  : X = -114
+-- Refresh: X = -86
+-- Minimize: X = -58
+-- Close : X = -30
+
 -- Copy log button
 local copyBtn = Instance.new("TextButton")
 copyBtn.Size = UDim2.new(0, 26, 0, 24)
-copyBtn.Position = UDim2.new(1, -86, 0, 4)
+copyBtn.Position = UDim2.new(1, -114, 0, 4)
 copyBtn.BackgroundColor3 = COLORS.preset
 copyBtn.Text = "📋"
 copyBtn.TextColor3 = COLORS.text
@@ -199,7 +210,7 @@ corner(copyBtn, 6)
 -- Refresh button
 local refreshBtn = Instance.new("TextButton")
 refreshBtn.Size = UDim2.new(0, 26, 0, 24)
-refreshBtn.Position = UDim2.new(1, -58, 0, 4)
+refreshBtn.Position = UDim2.new(1, -86, 0, 4)
 refreshBtn.BackgroundColor3 = COLORS.accent
 refreshBtn.Text = "🔄"
 refreshBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -211,7 +222,7 @@ refreshBtn.ZIndex = 21
 refreshBtn.Parent = titleBar
 corner(refreshBtn, 6)
 
--- Minimize
+-- Minimize button (FIXED position)
 local minBtn = Instance.new("TextButton")
 minBtn.Size = UDim2.new(0, 26, 0, 24)
 minBtn.Position = UDim2.new(1, -58, 0, 4)
@@ -265,6 +276,7 @@ for i, crate in ipairs(CRATE_LIST) do
 	local y = yStart + (i - 1) * (rowHeight + rowGap)
 
 	local row = Instance.new("Frame")
+	row.Name = "Row_" .. i
 	row.Size = UDim2.new(1, -16, 0, rowHeight)
 	row.Position = UDim2.new(0, 8, 0, y)
 	row.BackgroundColor3 = COLORS.row
@@ -272,7 +284,6 @@ for i, crate in ipairs(CRATE_LIST) do
 	row.Parent = frame
 	corner(row, 6)
 
-	-- Nama crate
 	local nameLbl = Instance.new("TextLabel")
 	nameLbl.Size = UDim2.new(1, -10, 0, 16)
 	nameLbl.Position = UDim2.new(0, 10, 0, 2)
@@ -285,7 +296,6 @@ for i, crate in ipairs(CRATE_LIST) do
 	nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
 	nameLbl.Parent = row
 
-	-- Detail: hotbar | backpack | total
 	local detailLbl = Instance.new("TextLabel")
 	detailLbl.Size = UDim2.new(1, -10, 0, 14)
 	detailLbl.Position = UDim2.new(0, 10, 0, 20)
@@ -320,9 +330,9 @@ local function refresh()
 		local backpack = lookupCount(backpackMap, crate)
 		local total = hotbar + backpack
 
-		hotbarAll += hotbar
-		backpackAll += backpack
-		totalAll += total
+		hotbarAll = hotbarAll + hotbar
+		backpackAll = backpackAll + backpack
+		totalAll = totalAll + total
 
 		local ref = rowRefs[crate]
 		if ref then
@@ -354,7 +364,7 @@ local function buildLogText()
 	local lines = {}
 
 	table.insert(lines, "=== CRATE TRACKER ===")
-	table.insert(lines, string.format("Time: %s", os.date("%Y-%m-%d %H:%M:%S")))
+	table.insert(lines, "Time: " .. tostring(os.time()))
 	table.insert(lines, "")
 
 	local totalAll = 0
@@ -363,7 +373,7 @@ local function buildLogText()
 		local hotbar = lookupCount(hotbarMap, crate)
 		local backpack = lookupCount(backpackMap, crate)
 		local total = hotbar + backpack
-		totalAll += total
+		totalAll = totalAll + total
 
 		table.insert(lines, string.format("%s:", crate))
 		table.insert(lines, string.format("  Hotbar:   %d", hotbar))
@@ -379,9 +389,16 @@ end
 
 copyBtn.MouseButton1Click:Connect(function()
 	local text = buildLogText()
-	if setclipboard then
-		setclipboard(text)
-		-- Feedback
+	local ok = pcall(function()
+		if setclipboard then
+			setclipboard(text)
+		elseif toclipboard then
+			toclipboard(text)
+		else
+			error("no clipboard function")
+		end
+	end)
+	if ok then
 		copyBtn.BackgroundColor3 = COLORS.green
 		copyBtn.Text = "✓"
 		task.delay(1, function()
@@ -407,7 +424,6 @@ end)
 -- ===== REFRESH BUTTON =====
 refreshBtn.MouseButton1Click:Connect(function()
 	refresh()
-	-- Spin animation
 	refreshBtn.Text = "⏳"
 	task.delay(0.5, function()
 		refreshBtn.Text = "🔄"
@@ -427,8 +443,8 @@ end)
 
 -- ===== AUTO REFRESH =====
 task.spawn(function()
-	while screenGui.Parent do
-		refresh()
+	while screenGui and screenGui.Parent do
+		pcall(refresh)
 		task.wait(1)
 	end
 end)
@@ -438,7 +454,6 @@ local isMinimized = false
 minBtn.MouseButton1Click:Connect(function()
 	isMinimized = not isMinimized
 	if isMinimized then
-		-- Hide all children except title bar
 		for _, child in ipairs(frame:GetChildren()) do
 			if child ~= titleBar then
 				child.Visible = false
@@ -463,4 +478,5 @@ closeBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ===== INIT =====
-refresh()
+pcall(refresh)
+print("[Crate Tracker] Loaded successfully!")
