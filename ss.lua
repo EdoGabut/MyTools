@@ -1,4 +1,4 @@
--- LocalScript: Auto Buy Gear + Seeds (Log Only) + Toggle Seeds
+-- LocalScript: Auto Buy Gear + Seeds + Crates (Log Only)
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
@@ -36,6 +36,12 @@ local SEED_LIST = {
 	"Vampire Bloom",
 }
 
+local CRATE_LIST = {
+	"Gravestone Crate",
+	"Halloween Prop Crate",
+	"Fog Machine Crate",
+}
+
 -- ===== PAYLOAD =====
 local function buildGearPayload(name)
 	local len = #name
@@ -49,9 +55,16 @@ local function buildSeedPayload(name)
 	return buffer.fromstring("\184\000" .. string.char(len) .. name)
 end
 
+local function buildCratePayload(name)
+	local len = #name
+	if len > 255 then return nil end
+	return buffer.fromstring("\204\000" .. string.char(len) .. name)
+end
+
 -- ===== PATH =====
-local GEAR_BASE = "game.Players.LocalPlayer.PlayerGui.GearShop.Frame.ScrollingFrame"
-local SEED_BASE = "game.Players.LocalPlayer.PlayerGui.SeedShop.Frame.NormalShop"
+local GEAR_BASE  = "game.Players.LocalPlayer.PlayerGui.GearShop.Frame.ScrollingFrame"
+local SEED_BASE  = "game.Players.LocalPlayer.PlayerGui.SeedShop.Frame.NormalShop"
+local CRATE_BASE = "game.Players.LocalPlayer.PlayerGui.CrateShop.Frame.ScrollingFrame"
 
 local function getGearStockPath(name)
 	return GEAR_BASE .. "." .. name .. ".Main_Frame.Stock_Text"
@@ -59,6 +72,10 @@ end
 
 local function getSeedStockPath(name)
 	return SEED_BASE .. "." .. name .. ".Main_Frame.Stock_Text"
+end
+
+local function getCrateStockPath(name)
+	return CRATE_BASE .. "." .. name .. ".Main_Frame.Stock_Text"
 end
 
 -- ===== HELPERS =====
@@ -113,7 +130,7 @@ screenGui.IgnoreGuiInset = true
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
 local FRAME_W = 220
-local FRAME_H = 62
+local FRAME_H = 92  -- naik karena tambah 1 toggle crate
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, FRAME_W, 0, FRAME_H)
@@ -143,7 +160,7 @@ title.TextSize = 11
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = frame
 
--- Dot indicator (status gear - selalu ON)
+-- Dot indicator (gear selalu ON)
 local dot = Instance.new("Frame")
 dot.Size = UDim2.new(0, 8, 0, 8)
 dot.Position = UDim2.new(1, -46, 0, 9)
@@ -165,7 +182,7 @@ closeBtn.AutoButtonColor = false
 closeBtn.Parent = frame
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 4)
 
--- Toggle SEED ON/OFF
+-- Toggle SEED
 local seedToggle = Instance.new("TextButton")
 seedToggle.Size = UDim2.new(1, -16, 0, 26)
 seedToggle.Position = UDim2.new(0, 8, 0, 30)
@@ -179,11 +196,26 @@ seedToggle.AutoButtonColor = false
 seedToggle.Parent = frame
 Instance.new("UICorner", seedToggle).CornerRadius = UDim.new(0, 6)
 
+-- Toggle CRATE
+local crateToggle = Instance.new("TextButton")
+crateToggle.Size = UDim2.new(1, -16, 0, 26)
+crateToggle.Position = UDim2.new(0, 8, 0, 60)
+crateToggle.BackgroundColor3 = C.green
+crateToggle.Text = "📦 CRATE: ON"
+crateToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+crateToggle.Font = Enum.Font.GothamBold
+crateToggle.TextSize = 11
+crateToggle.BorderSizePixel = 0
+crateToggle.AutoButtonColor = false
+crateToggle.Parent = frame
+Instance.new("UICorner", crateToggle).CornerRadius = UDim.new(0, 6)
+
 -- ===== AUTO BUY =====
 local BUY_INTERVAL = 0.5
-local lastStock = {}  -- [key] = stok terakhir (biar tidak spam log)
+local lastStock = {}  -- [key] = stok terakhir
 
-local seedEnabled = true   -- flag ON/OFF untuk seed
+local seedEnabled = true
+local crateEnabled = true
 
 local function startAutoBuy(key, kind, stockPath, payloadBuilder, isEnabledFn)
 	task.spawn(function()
@@ -216,7 +248,8 @@ end
 -- ===== START ALL =====
 print("=====================================")
 print("[AutoBuy] Starting...")
-print(string.format("[AutoBuy] Gear: %d | Seeds: %d", #GEAR_LIST, #SEED_LIST))
+print(string.format("[AutoBuy] Gear: %d | Seeds: %d | Crates: %d",
+	#GEAR_LIST, #SEED_LIST, #CRATE_LIST))
 print("=====================================")
 
 -- Gear (selalu ON)
@@ -233,7 +266,14 @@ for _, name in ipairs(SEED_LIST) do
 	end)
 end
 
--- ===== TOGGLE LOGIC =====
+-- Crates (bisa di-toggle)
+for _, name in ipairs(CRATE_LIST) do
+	startAutoBuy(name, "CRATE", getCrateStockPath(name), buildCratePayload, function()
+		return crateEnabled
+	end)
+end
+
+-- ===== TOGGLE SEED =====
 seedToggle.MouseButton1Click:Connect(function()
 	seedEnabled = not seedEnabled
 	if seedEnabled then
@@ -247,10 +287,24 @@ seedToggle.MouseButton1Click:Connect(function()
 	end
 end)
 
+-- ===== TOGGLE CRATE =====
+crateToggle.MouseButton1Click:Connect(function()
+	crateEnabled = not crateEnabled
+	if crateEnabled then
+		crateToggle.Text = "📦 CRATE: ON"
+		crateToggle.BackgroundColor3 = C.green
+		print("[AutoBuy] Crate auto-buy: ON")
+	else
+		crateToggle.Text = "📦 CRATE: OFF"
+		crateToggle.BackgroundColor3 = C.red
+		print("[AutoBuy] Crate auto-buy: OFF")
+	end
+end)
+
 -- ===== CLOSE =====
 closeBtn.MouseButton1Click:Connect(function()
 	screenGui:Destroy()
 	print("[AutoBuy] Stopped.")
 end)
 
-print("[AutoBuy] Loaded | Aktif. Klik toggle buat ON/OFF seed.")
+print("[AutoBuy] Loaded | Aktif. Klik toggle buat ON/OFF seed/crate.")
