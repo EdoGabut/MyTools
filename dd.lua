@@ -1,19 +1,11 @@
 -- ============================================================
--- FARM MONSTER + GUARD + CYCLE + AUTO-LOCK (v5)
--- - Ada monster    → unlock, farm
--- - Tidak ada monster → lock di tempat (auto)
--- - Sore 15:00     → stop farm, unlock, fire stand, walk 60, lock
--- - Malam 18:00    → fire Briar 2x (tetap locked)
--- - Pagi 06:00     → unlock, ke Part4, E 2x, resume farm
--- - Fox guard + anti-duduk + player guard
+-- FARM PUMPKIN + MONSTER + SEEDPACK + GUARD + LOCK POSITION
+-- Lock pakai ChildAdded/ChildRemoved + posisi check
 -- ============================================================
 local Players            = game:GetService("Players")
 local RunService         = game:GetService("RunService")
-local ReplicatedStorage  = game:GetService("ReplicatedStorage")
 local VirtualInputManager= game:GetService("VirtualInputManager")
 local VirtualUser        = game:GetService("VirtualUser")
-local UserInputService   = game:GetService("UserInputService")
-local Lighting           = game:GetService("Lighting")
 
 local player = Players.LocalPlayer
 
@@ -23,12 +15,19 @@ local player = Players.LocalPlayer
 local CONFIG = {
     -- ===== Auto Farm =====
     MONSTER_FOLDER = "Workspace.MonsterVisuals",
+    PUMPKIN_FOLDER = "Workspace.Pumpkins",
+    SEEDPACK_PATH  = "Workspace.Map.SeedPackSpawnServerLocations",
     MONSTER_RANGE  = 10,
+    PUMPKIN_RANGE  = 8,
     WALK_SPEED         = 30,
-    CYCLE_WALK_SPEED   = 20,
     ATTACK_COOLDOWN    = 0.12,
     RETARGET_INTERVAL  = 0.1,
     SEARCH_INTERVAL    = 0.3,
+    SEEDPACK_STOP_DIST      = 5,
+    SEEDPACK_MOVE_REFRESH   = 0.15,
+    SEEDPACK_IDLE_DELAY     = 0.5,
+    SEEDPACK_TRIGGER_COOLDOWN = 0.15,
+    SEEDPACK_TRIGGERED_TTL  = 1.5,
 
     -- ===== Fox Guard =====
     FOX_MODELS_PATH    = "game.Workspace._PetVisualClient.Models",
@@ -39,44 +38,9 @@ local CONFIG = {
     FOX_SCAN_ACTIVE    = 0.05,
     FOX_SCAN_IDLE      = 0.20,
 
-    -- ===== Player Guard =====
-    PLAYER_GUARD_ENABLED   = true,
-    PLAYER_GUARD_RADIUS    = 12,
-    PLAYER_GUARD_COOLDOWN  = 0.08,
-    PLAYER_GUARD_SCAN      = 0.1,
-    PLAYER_GUARD_IGNORE_SELF = true,
-
-    -- ===== Anti Duduk =====
-    ANTI_SIT_ENABLED = true,
-    ANTI_SIT_JUMP_COOLDOWN = 0.4,
-
-    -- ===== Auto Lock =====
-    LOCK_CHECK_INTERVAL = 0.15,
-
-    -- ===== Cycle =====
-    SORE_HOUR   = 15,
-    NIGHT_HOUR  = 18,
-    PAGI_HOUR   = 6,
-
-    STAND_WALK_STUD     = 60,
-    STAND_WAIT_AFTER_FIRE = 1,
-    STAND_MOVE_TIMEOUT  = 8,
-
-    BRIAR_FIRE_COUNT    = 2,
-    BRIAR_FIRE_GAP      = 1.5,
-
-    PACKET_STAND    = "\020\000\006Garden~\000\192\151\200C\006\129\018C\b\172\003\195",
-    PACKET_BRIAR    = "\195\0009\nBriar Rose",
-
-    TARGET_PATH     = { "WitchCauldron", "WitchCauldron", "WitchCauldron", "Part4" },
-    WATER_FOLDER_PATH = { "WitchCauldron", "WitchCauldron", "WitchCauldron", "Water" },
-    ARRIVE_DISTANCE = 2,
-    WALK_TIMEOUT    = 45,
-    E_TIMES         = 2,
-    E_GAP           = 1,
-    E_HOLD          = 0.1,
-
-    MAX_LOGS        = 200,
+    -- ===== Lock Position =====
+    LOCK_ENABLED       = true,
+    LOCK_CHECK_INTERVAL= 0.1,   -- cek posisi ringan (bukan Heartbeat)
 
     -- ===== Clear Map =====
     CLEAR_MAP = {
@@ -106,7 +70,6 @@ local CONFIG = {
 local running = false
 local stopFlag = false
 local busy = false
-local sequenceRunning = false
 
 local isRunning = false
 local runToken = 0
@@ -123,40 +86,13 @@ local foxIdleState = true
 local foxTotal = 0
 local foxInRange = 0
 
--- Player Guard
-local playerGuardEnabled = false
-local playerGuardConn = nil
-local playerGuardLastClick = 0
-local playerGuardLastScan = 0
-
--- Anti Sit
-local antiSitEnabled = false
-local antiSitConn = nil
-local antiSitLastJump = 0
-
--- Lock (dipakai auto-lock + cycle)
-local State = {
-    locked = false,
-    lockPos = nil,
-    lockCFrame = nil,
-    lockConn = nil,
-    velConn = nil,
-}
-
--- Lock Manager
-local lockManagerConn = nil
-local lockLastCheck = 0
-
--- ============================================================
--- LOGGER
--- ============================================================
-local Logs = {}
-local function addLog(tag, msg)
-    local entry = string.format("[%s] [%s] %s", os.date("%H:%M:%S"), tag, msg)
-    table.insert(Logs, entry)
-    if #Logs > CONFIG.MAX_LOGS then table.remove(Logs, 1) end
-    print("[Cycle] " .. entry)
-end
+-- Lock position
+local lockActive = false
+local lockPosition = nil
+local lockRoot = nil
+local lockLoopToken = 0
+local lockFolderConns = {}
+local targetCount = 0   -- jumlah target aktif (monster + pumpkin + seedpack)
 
 -- ============================================================
 -- HELPERS
@@ -177,15 +113,6 @@ local function resolvePath(pathStr)
     return node
 end
 
-local function resolveArrayPath(path)
-    local current = workspace
-    for _, name in ipairs(path) do
-        if not current then return nil end
-        current = current:FindFirstChild(name)
-    end
-    return current
-end
-
 local function findRootPart(model)
     if not model or not model.Parent then return nil end
     local rp = model:FindFirstChild("RootPart")
@@ -199,25 +126,26 @@ local function findRootPart(model)
     return nil
 end
 
-local function getChar()
-    local c = player.Character
-    if not c then return nil end
-    local hum = c:FindFirstChildOfClass("Humanoid")
-    local root = c:FindFirstChild("HumanoidRootPart")
-    if hum and root then return hum, root, c end
+local function getPromptPosition(prompt)
+    if not prompt or not prompt.Parent then return nil end
+    local parent = prompt.Parent
+    if parent:IsA("BasePart") then return parent.Position end
+    if parent:IsA("Attachment") and parent.Parent and parent.Parent:IsA("BasePart") then
+        return parent.Parent.Position
+    end
+    for _, d in ipairs(parent:GetDescendants()) do
+        if d:IsA("BasePart") then return d.Position end
+    end
+    if parent.Parent then
+        for _, d in ipairs(parent.Parent:GetDescendants()) do
+            if d:IsA("BasePart") then return d.Position end
+        end
+    end
     return nil
 end
 
-local function hasActiveMonster()
-    local folder = resolvePath(CONFIG.MONSTER_FOLDER)
-    if not folder then return false end
-    for _, c in ipairs(folder:GetChildren()) do
-        if c:IsA("Model") then
-            local rp = findRootPart(c)
-            if rp and rp.Parent then return true end
-        end
-    end
-    return false
+local function log(msg)
+    print("[Farm] " .. msg)
 end
 
 -- ============================================================
@@ -301,18 +229,10 @@ local function releaseE()
 end
 
 local function tapE(holdTime)
-    holdTime = holdTime or CONFIG.E_HOLD
+    holdTime = holdTime or 0.1
     pressE()
     task.wait(holdTime)
     releaseE()
-end
-
-local function pressSpace()
-    pcall(function()
-        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
-        task.wait(0.05)
-        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
-    end)
 end
 
 local function clickLMB()
@@ -337,156 +257,113 @@ local function clickLMB()
 end
 
 -- ============================================================
--- FIRE REMOTE
+-- SEEDPACK COLLECTION
 -- ============================================================
-local function fireRemote(packetString)
-    local ok, err = pcall(function()
-        local args = { buffer.fromstring(packetString) }
-        ReplicatedStorage
-            :WaitForChild("SharedModules")
-            :WaitForChild("Packet")
-            :WaitForChild("RemoteEvent")
-            :FireServer(unpack(args))
-    end)
-    if ok then return true
-    else addLog("ERR", "Fire gagal: " .. tostring(err)); return false end
-end
-
--- ============================================================
--- MOVE FORWARD
--- ============================================================
-local function moveForward(stud)
-    local hum, root = getChar()
-    if not hum or not root then return false end
-
-    local look = root.CFrame.LookVector
-    local dir = Vector3.new(look.X, 0, look.Z)
-    if dir.Magnitude < 0.01 then dir = Vector3.new(0, 0, -1) end
-    dir = dir.Unit
-
-    local startPos = root.Position
-    local targetPos = startPos + dir * stud
-
-    addLog("MOVE", string.format("Walk %d stud...", stud))
-
-    local t0 = tick()
-    while tick() - t0 < CONFIG.STAND_MOVE_TIMEOUT do
-        local h, r = getChar()
-        if not h or not r then break end
-        local flatTarget = Vector3.new(targetPos.X, r.Position.Y, targetPos.Z)
-        if (flatTarget - r.Position).Magnitude < 1 then break end
-        h:MoveTo(flatTarget)
-        task.wait(0.05)
+local function getSeedPackPrompts()
+    local folder = resolvePath(CONFIG.SEEDPACK_PATH)
+    if not folder then return {} end
+    local list = {}
+    for _, obj in ipairs(folder:GetDescendants()) do
+        if obj:IsA("ProximityPrompt") then table.insert(list, obj) end
     end
-
-    local h, r = getChar()
-    if h and r then
-        h:Move(Vector3.zero, false)
-        task.wait(0.05)
-        addLog("MOVE", "Arrived")
-        return true, r.Position
-    end
-    return false
+    return list
 end
 
--- ============================================================
--- LOCK
--- ============================================================
-local function startLock(lockPos)
-    if State.locked then return end
-
-    if State.lockConn then State.lockConn:Disconnect() end
-    if State.velConn then State.velConn:Disconnect() end
-
-    State.locked = true
-    State.lockPos = lockPos
-
-    local _, root = getChar()
-    if root then State.lockCFrame = root.CFrame end
-
-    State.lockConn = RunService.RenderStepped:Connect(function()
-        if not State.locked then return end
-        local h, r = getChar()
-        if not h or not r then return end
-        r.AssemblyLinearVelocity = Vector3.zero
-        r.AssemblyAngularVelocity = Vector3.zero
-        r.Velocity = Vector3.zero
-        r.RotVelocity = Vector3.zero
-        if State.lockPos and (State.lockPos - r.Position).Magnitude > 0.3 then
-            r.CFrame = State.lockCFrame
-        end
-        h:Move(Vector3.zero, false)
-        h.WalkSpeed = 0
-        h.JumpPower = 0
-        h.JumpHeight = 0
-    end)
-
-    State.velConn = RunService.Stepped:Connect(function()
-        if not State.locked then return end
-        local _, r = getChar()
-        if not r then return end
-        r.AssemblyLinearVelocity = Vector3.zero
-        r.AssemblyAngularVelocity = Vector3.zero
-    end)
-
-    addLog("LOCK", string.format("Locked at (%.1f, %.1f, %.1f)",
-        lockPos.X, lockPos.Y, lockPos.Z))
-end
-
-local function stopLock()
-    if not State.locked then return end
-    State.locked = false
-    State.lockPos = nil
-    State.lockCFrame = nil
-    if State.lockConn then State.lockConn:Disconnect() State.lockConn = nil end
-    if State.velConn then State.velConn:Disconnect() State.velConn = nil end
-    local h = getChar()
-    if h then
-        h.WalkSpeed = CONFIG.WALK_SPEED
-        h.JumpPower = 50
-        h.JumpHeight = 7.2
-    end
-    addLog("LOCK", "Unlocked")
-end
-
--- ============================================================
--- LOCK MANAGER (auto lock kalau tidak ada monster)
--- ============================================================
-local function startLockManager()
-    if lockManagerConn then lockManagerConn:Disconnect() end
-    lockManagerConn = RunService.Heartbeat:Connect(function()
-        if not running or stopFlag then return end
-        -- Skip saat sequence / busy / farm mati
-        if busy or sequenceRunning or not isRunning then return end
-
-        local now = tick()
-        if now - lockLastCheck < CONFIG.LOCK_CHECK_INTERVAL then return end
-        lockLastCheck = now
-
-        if hasActiveMonster() then
-            -- Ada monster → unlock
-            if State.locked then stopLock() end
-        else
-            -- Tidak ada monster → lock di tempat
-            if not State.locked then
-                local _, root = getChar()
-                if root then
-                    addLog("LOCK", "Auto-lock: no monster")
-                    startLock(root.Position)
+local function findNearestSeedPack(prompts, myPos, skipSet)
+    local nearest, nearestDist = nil, math.huge
+    for _, p in ipairs(prompts) do
+        if p and p.Parent and not (skipSet and skipSet[p]) then
+            local pos = getPromptPosition(p)
+            if pos then
+                local d = (pos - myPos).Magnitude
+                if d < nearestDist then
+                    nearestDist = d
+                    nearest = p
                 end
             end
         end
-    end)
-    addLog("LOCK", "Manager ON")
+    end
+    return nearest, nearestDist
 end
 
-local function stopLockManager()
-    if lockManagerConn then lockManagerConn:Disconnect() lockManagerConn = nil end
-    addLog("LOCK", "Manager OFF")
+local function triggerSeedPack(prompt)
+    if not prompt or not prompt.Parent then return false end
+    pcall(function()
+        prompt.HoldDuration = 0
+        prompt.RequiresLineOfSight = false
+        prompt.Enabled = true
+        prompt.KeyboardKeyCode = Enum.KeyCode.E
+        prompt.ClickablePrompt = false
+        prompt.MaxActivationDistance = 30
+    end)
+    tapE(0.07)
+    return true
+end
+
+local function runSeedPackMode(hum, root, myToken, isRunningFn)
+    local triggeredSet = {}
+    local handled = false
+
+    while isRunningFn() and myToken == runToken and not busy do
+        local now = tick()
+        for prompt, t in pairs(triggeredSet) do
+            if (now - t) > CONFIG.SEEDPACK_TRIGGERED_TTL or not prompt.Parent then
+                triggeredSet[prompt] = nil
+            end
+        end
+
+        local prompts = getSeedPackPrompts()
+        if #prompts == 0 then
+            if handled then
+                task.wait(CONFIG.SEEDPACK_IDLE_DELAY)
+                if #getSeedPackPrompts() == 0 then return true end
+            else
+                return false
+            end
+        else
+            handled = true
+        end
+
+        local myPos = root.Position
+        local nearest = findNearestSeedPack(prompts, myPos, triggeredSet)
+
+        if not nearest then
+            task.wait(CONFIG.SEEDPACK_IDLE_DELAY)
+        else
+            local currentTarget = nearest
+
+            while isRunningFn() and myToken == runToken and not busy do
+                if not currentTarget or not currentTarget.Parent then
+                    local newPrompts = getSeedPackPrompts()
+                    if #newPrompts == 0 then return true end
+                    local newNearest = findNearestSeedPack(newPrompts, root.Position, triggeredSet)
+                    if not newNearest then break end
+                    currentTarget = newNearest
+                end
+
+                local myPos2 = root.Position
+                local targetPos = getPromptPosition(currentTarget)
+                if not targetPos then break end
+                local dist = (targetPos - myPos2).Magnitude
+
+                if dist <= CONFIG.SEEDPACK_STOP_DIST then
+                    pcall(function() hum:MoveTo(root.Position) end)
+                    triggerSeedPack(currentTarget)
+                    triggeredSet[currentTarget] = tick()
+                    task.wait(CONFIG.SEEDPACK_TRIGGER_COOLDOWN)
+                    break
+                end
+
+                hum:MoveTo(targetPos)
+                task.wait(CONFIG.SEEDPACK_MOVE_REFRESH)
+            end
+        end
+    end
+    return true
 end
 
 -- ============================================================
--- FARM MODE (MONSTER ONLY)
+-- FARM MODE
 -- ============================================================
 local function findNearestMonster(monsterFolder, myPos)
     local nearest, nearestRp, nearestDist = nil, nil, math.huge
@@ -507,24 +384,61 @@ local function findNearestMonster(monsterFolder, myPos)
     return nearest, nearestRp, nearestDist
 end
 
-local function runFarmMode(hum, root, monsterFolder, myToken, isRunningFn)
-    local currentTarget, currentRp = nil, nil
+local function findNearestPumpkin(pumpkinFolder, myPos)
+    local nearest, nearestRp, nearestDist = nil, nil, math.huge
+    if not pumpkinFolder then return nil, nil end
+    for _, child in ipairs(pumpkinFolder:GetChildren()) do
+        local rp
+        if child:IsA("Model") then rp = findRootPart(child)
+        elseif child:IsA("BasePart") then rp = child end
+        if rp and rp.Parent then
+            local d = (rp.Position - myPos).Magnitude
+            if d < nearestDist then
+                nearestDist = d
+                nearest = child
+                nearestRp = rp
+            end
+        end
+    end
+    return nearest, nearestRp, nearestDist
+end
+
+local function runFarmMode(hum, root, monsterFolder, pumpkinFolder, myToken, isRunningFn)
+    local currentTarget, currentRp, currentKind = nil, nil, nil
     local lastSearch = 0
 
-    while isRunningFn() and myToken == runToken and not busy and not sequenceRunning do
+    while isRunningFn() and myToken == runToken and not busy do
+        local prompts = getSeedPackPrompts()
+        if #prompts > 0 then return end
+
         local myPos = root.Position
         local now = tick()
 
-        if (now - lastSearch) >= CONFIG.SEARCH_INTERVAL or not currentTarget or not currentTarget.Parent then
-            lastSearch = now
-            local mTarget, mRp = findNearestMonster(monsterFolder, myPos)
-            currentTarget = mTarget
-            currentRp = mRp
-        end
+        local monsterTarget, monsterRp = findNearestMonster(monsterFolder, myPos)
 
-        if currentTarget and State.locked then
-            -- Ada target tapi masih locked → unlock dulu
-            stopLock()
+        if monsterTarget then
+            if currentKind ~= "monster" or currentTarget ~= monsterTarget then
+                currentTarget = monsterTarget
+                currentRp = monsterRp
+                currentKind = "monster"
+            end
+        else
+            if currentKind == "pumpkin" and currentTarget and (not currentTarget.Parent or not currentRp or not currentRp.Parent) then
+                currentTarget, currentRp, currentKind = nil, nil, nil
+            end
+            if currentKind ~= "pumpkin" or not currentTarget then
+                if (now - lastSearch) >= CONFIG.SEARCH_INTERVAL then
+                    lastSearch = now
+                    local pTarget, pRp = findNearestPumpkin(pumpkinFolder, myPos)
+                    if pTarget then
+                        currentTarget = pTarget
+                        currentRp = pRp
+                        currentKind = "pumpkin"
+                    else
+                        currentTarget, currentRp, currentKind = nil, nil, nil
+                    end
+                end
+            end
         end
 
         if not currentTarget or not currentRp or not currentRp.Parent then
@@ -534,8 +448,9 @@ local function runFarmMode(hum, root, monsterFolder, myToken, isRunningFn)
             local targetPos = currentRp.Position
             local flatDir = Vector3.new(targetPos.X - myPos.X, 0, targetPos.Z - myPos.Z)
             local dist = flatDir.Magnitude
+            local range = (currentKind == "monster") and CONFIG.MONSTER_RANGE or CONFIG.PUMPKIN_RANGE
 
-            if dist <= CONFIG.MONSTER_RANGE then
+            if dist <= range then
                 hum:Move(Vector3.zero, false)
                 local lookAt = CFrame.lookAt(myPos, Vector3.new(targetPos.X, myPos.Y, targetPos.Z))
                 root.CFrame = CFrame.new(myPos) * (lookAt - lookAt.Position)
@@ -547,11 +462,147 @@ local function runFarmMode(hum, root, monsterFolder, myToken, isRunningFn)
                 end
                 task.wait(0.03)
             else
-                hum:MoveTo(Vector3.new(targetPos.X, myPos.Y, targetPos.Z))
+                local goal = Vector3.new(targetPos.X, myPos.Y, targetPos.Z)
+                hum:MoveTo(goal)
                 task.wait(CONFIG.RETARGET_INTERVAL)
             end
         end
     end
+end
+
+-- ============================================================
+-- LOCK POSITION (pakai ChildAdded/ChildRemoved + posisi check)
+-- ============================================================
+local function countTargets()
+    local monsterFolder = resolvePath(CONFIG.MONSTER_FOLDER)
+    local pumpkinFolder = resolvePath(CONFIG.PUMPKIN_FOLDER)
+    local seedFolder    = resolvePath(CONFIG.SEEDPACK_PATH)
+
+    local n = 0
+    if monsterFolder then n += #monsterFolder:GetChildren() end
+    if pumpkinFolder then n += #pumpkinFolder:GetChildren() end
+    if seedFolder then
+        for _, d in ipairs(seedFolder:GetDescendants()) do
+            if d:IsA("ProximityPrompt") then n += 1 break end
+        end
+    end
+    return n
+end
+
+local function lockStart(root)
+    if not CONFIG.LOCK_ENABLED then return end
+    if lockActive then return end
+    lockActive = true
+    lockRoot = root
+    lockPosition = root.CFrame
+
+    lockLoopToken += 1
+    local myToken = lockLoopToken
+
+    task.spawn(function()
+        while lockActive and myToken == lockLoopToken and not stopFlag do
+            if not lockRoot or not lockRoot.Parent then break end
+
+            local char = player.Character
+            if char then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    -- stop movement biar ga jalan
+                    hum:Move(Vector3.zero, false)
+                end
+            end
+
+            -- cek posisi: kalau bergeser, balikin
+            if lockRoot then
+                local cur = lockRoot.CFrame
+                local dx = cur.Position.X - lockPosition.Position.X
+                local dz = cur.Position.Z - lockPosition.Position.Z
+                local dist = math.sqrt(dx*dx + dz*dz)
+                if dist > 0.05 then
+                    lockRoot.CFrame = lockPosition
+                end
+            end
+
+            task.wait(CONFIG.LOCK_CHECK_INTERVAL)
+        end
+    end)
+end
+
+local function lockStop()
+    lockActive = false
+    lockPosition = nil
+    lockRoot = nil
+    lockLoopToken += 1
+end
+
+-- ============================================================
+-- FOLDER WATCHER (ChildAdded / ChildRemoved)
+-- ============================================================
+local function refreshLockState()
+    targetCount = countTargets()
+    if targetCount > 0 then
+        -- ada target → unlock
+        if lockActive then lockStop() end
+    else
+        -- kosong semua → lock
+        local char = player.Character
+        if char then
+            local root = char:FindFirstChild("HumanoidRootPart")
+            if root then lockStart(root) end
+        end
+    end
+end
+
+local function watchFolder(folder)
+    if not folder then return end
+
+    local function onChildAdded(child)
+        refreshLockState()
+    end
+    local function onChildRemoved(child)
+        refreshLockState()
+    end
+
+    local c1 = folder.ChildAdded:Connect(onChildAdded)
+    local c2 = folder.ChildRemoved:Connect(onChildRemoved)
+    table.insert(lockFolderConns, c1)
+    table.insert(lockFolderConns, c2)
+
+    -- watch descendants untuk seedpack (ProximityPrompt di dalam folder)
+    local c3 = folder.DescendantAdded:Connect(function(d)
+        if d:IsA("ProximityPrompt") then refreshLockState() end
+    end)
+    local c4 = folder.DescendantRemoving:Connect(function(d)
+        if d:IsA("ProximityPrompt") then refreshLockState() end
+    end)
+    table.insert(lockFolderConns, c3)
+    table.insert(lockFolderConns, c4)
+end
+
+local function startFolderWatchers()
+    -- disconnect lama
+    for _, c in ipairs(lockFolderConns) do
+        pcall(function() c:Disconnect() end)
+    end
+    lockFolderConns = {}
+
+    local monsterFolder = resolvePath(CONFIG.MONSTER_FOLDER)
+    local pumpkinFolder = resolvePath(CONFIG.PUMPKIN_FOLDER)
+    local seedFolder    = resolvePath(CONFIG.SEEDPACK_PATH)
+
+    watchFolder(monsterFolder)
+    watchFolder(pumpkinFolder)
+    watchFolder(seedFolder)
+
+    -- refresh awal
+    refreshLockState()
+end
+
+local function stopFolderWatchers()
+    for _, c in ipairs(lockFolderConns) do
+        pcall(function() c:Disconnect() end)
+    end
+    lockFolderConns = {}
 end
 
 -- ============================================================
@@ -562,13 +613,11 @@ local function startSpeedKeeper()
     local myToken = speedLoopToken
     task.spawn(function()
         while myToken == speedLoopToken do
-            if not State.locked then
-                local char = player.Character
-                if char then
-                    local hum = char:FindFirstChildOfClass("Humanoid")
-                    if hum and hum.WalkSpeed ~= CONFIG.WALK_SPEED then
-                        pcall(function() hum.WalkSpeed = CONFIG.WALK_SPEED end)
-                    end
+            local char = player.Character
+            if char then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum and hum.WalkSpeed ~= CONFIG.WALK_SPEED then
+                    pcall(function() hum.WalkSpeed = CONFIG.WALK_SPEED end)
                 end
             end
             task.wait(0.1)
@@ -582,8 +631,9 @@ end
 
 local function mainFarmLoop()
     local monsterFolder = resolvePath(CONFIG.MONSTER_FOLDER)
-    if not monsterFolder then
-        addLog("ERR", "Monster folder tidak ditemukan")
+    local pumpkinFolder = resolvePath(CONFIG.PUMPKIN_FOLDER)
+    if not monsterFolder and not pumpkinFolder then
+        log("❌ Monster & Pumpkin folder tidak ditemukan")
         return
     end
 
@@ -602,12 +652,23 @@ local function mainFarmLoop()
     while isRunningFn() and hum.Health > 0 do
         if not root.Parent then break end
         if busy then
-            task.wait(0.2)
+            task.wait(0.1)
         else
-            runFarmMode(hum, root, monsterFolder, myToken, isRunningFn)
+            -- kalau lock aktif, jangan farming
+            if lockActive then
+                task.wait(0.15)
+            else
+                local prompts = getSeedPackPrompts()
+                if #prompts > 0 then
+                    runSeedPackMode(hum, root, myToken, isRunningFn)
+                else
+                    runFarmMode(hum, root, monsterFolder, pumpkinFolder, myToken, isRunningFn)
+                end
+            end
         end
     end
 
+    lockStop()
     if activeHumanoid == hum and hum.Parent then
         pcall(function() hum:Move(Vector3.zero, false) end)
     end
@@ -618,12 +679,12 @@ local function startFarm()
     isRunning = true
     startSpeedKeeper()
     task.spawn(mainFarmLoop)
-    addLog("FARM", "Started")
 end
 
 local function stopFarm()
     isRunning = false
     runToken += 1
+    lockStop()
     local hum = activeHumanoid
     activeHumanoid = nil
     if hum and hum.Parent then
@@ -634,7 +695,6 @@ local function stopFarm()
         end)
     end
     stopSpeedKeeper()
-    addLog("FARM", "Stopped")
 end
 
 -- ============================================================
@@ -644,6 +704,7 @@ local function scanFoxes(myPos)
     local container = resolvePath(CONFIG.FOX_MODELS_PATH)
     if not container then foxTotal, foxInRange = 0, 0 return end
     local near, cnt, tot = math.huge, 0, 0
+    local minD, maxD = CONFIG.FOX_MIN_DIST, CONFIG.FOX_MAX_DIST
     local filter = CONFIG.FOX_NAME_FILTER:lower()
     for _, child in ipairs(container:GetChildren()) do
         if child:IsA("Model") and child.Name:lower():find(filter, 1, true) then
@@ -652,7 +713,7 @@ local function scanFoxes(myPos)
             if rp then
                 local d = (rp.Position - myPos).Magnitude
                 if d < near then near = d end
-                if d >= CONFIG.FOX_MIN_DIST and d <= CONFIG.FOX_MAX_DIST then cnt += 1 end
+                if d >= minD and d <= maxD then cnt += 1 end
             end
         end
     end
@@ -681,324 +742,11 @@ local function startFoxGuard()
             end
         end
     end)
-    addLog("GUARD", "Fox ON")
 end
 
 local function stopFoxGuard()
     foxEnabled = false
     if foxConn then foxConn:Disconnect() foxConn = nil end
-    addLog("GUARD", "Fox OFF")
-end
-
--- ============================================================
--- PLAYER GUARD
--- ============================================================
-local function startPlayerGuard()
-    if playerGuardConn then playerGuardConn:Disconnect() end
-    playerGuardEnabled = true
-    playerGuardConn = RunService.Heartbeat:Connect(function()
-        if not playerGuardEnabled or not CONFIG.PLAYER_GUARD_ENABLED then return end
-        local now = tick()
-        if now - playerGuardLastScan < CONFIG.PLAYER_GUARD_SCAN then return end
-        playerGuardLastScan = now
-
-        local myChar = player.Character
-        if not myChar then return end
-        local myRoot = myChar:FindFirstChild("HumanoidRootPart")
-        if not myRoot then return end
-        local myPos = myRoot.Position
-
-        local found = false
-        for _, other in ipairs(Players:GetPlayers()) do
-            if other ~= player or not CONFIG.PLAYER_GUARD_IGNORE_SELF then
-                local oChar = other.Character
-                if oChar then
-                    local oRoot = oChar:FindFirstChild("HumanoidRootPart")
-                    if oRoot and (oRoot.Position - myPos).Magnitude <= CONFIG.PLAYER_GUARD_RADIUS then
-                        found = true
-                        break
-                    end
-                end
-            end
-        end
-
-        if found and now - playerGuardLastClick >= CONFIG.PLAYER_GUARD_COOLDOWN then
-            playerGuardLastClick = now
-            clickLMB()
-        end
-    end)
-    addLog("GUARD", "Player ON")
-end
-
-local function stopPlayerGuard()
-    playerGuardEnabled = false
-    if playerGuardConn then playerGuardConn:Disconnect() playerGuardConn = nil end
-    addLog("GUARD", "Player OFF")
-end
-
--- ============================================================
--- ANTI SIT
--- ============================================================
-local function isSitting(hum)
-    if not hum then return false end
-    if hum.Sit then return true end
-    if hum:GetState() == Enum.HumanoidStateType.Sitting then return true end
-    if hum.SeatPart then return true end
-    return false
-end
-
-local function startAntiSit()
-    if antiSitConn then antiSitConn:Disconnect() end
-    antiSitEnabled = true
-    antiSitConn = RunService.Heartbeat:Connect(function()
-        if not antiSitEnabled or not CONFIG.ANTI_SIT_ENABLED then return end
-        local char = player.Character
-        if not char then return end
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if not hum then return end
-        if isSitting(hum) then
-            local now = tick()
-            if now - antiSitLastJump >= CONFIG.ANTI_SIT_JUMP_COOLDOWN then
-                antiSitLastJump = now
-                pcall(function() hum.Sit = false end)
-                pcall(function() hum:ChangeState(Enum.HumanoidStateType.Jumping) end)
-                pressSpace()
-            end
-        end
-    end)
-    addLog("GUARD", "AntiSit ON")
-end
-
-local function stopAntiSit()
-    antiSitEnabled = false
-    if antiSitConn then antiSitConn:Disconnect() antiSitConn = nil end
-    addLog("GUARD", "AntiSit OFF")
-end
-
--- ============================================================
--- WALK KE PART4
--- ============================================================
-local function walkToPart4()
-    local target = resolveArrayPath(CONFIG.TARGET_PATH)
-    if not target or not target:IsA("BasePart") then
-        addLog("ERR", "Part4 gak ada")
-        return false
-    end
-
-    local char = player.Character
-    if not char then return false end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum then return false end
-
-    addLog("MOVE", "Walk ke Part4...")
-
-    local arrived = false
-    local tStart = tick()
-    local conn
-    conn = RunService.Heartbeat:Connect(function()
-        if stopFlag then conn:Disconnect() return end
-        if tick() - tStart > CONFIG.WALK_TIMEOUT then conn:Disconnect() return end
-
-        local c = player.Character
-        if not c then conn:Disconnect() return end
-        local h = c:FindFirstChildOfClass("Humanoid")
-        if not h then conn:Disconnect() return end
-        local root = c:FindFirstChild("HumanoidRootPart")
-        if not root then conn:Disconnect() return end
-
-        local tgt = resolveArrayPath(CONFIG.TARGET_PATH)
-        if not tgt then conn:Disconnect() return end
-
-        local myPos = root.Position
-        local tgtPos = tgt.Position
-        local flatDist = (Vector3.new(myPos.X, 0, myPos.Z) - Vector3.new(tgtPos.X, 0, tgtPos.Z)).Magnitude
-
-        if flatDist <= CONFIG.ARRIVE_DISTANCE then
-            arrived = true
-            pcall(function() h:MoveTo(root.Position) end)
-            conn:Disconnect()
-            return
-        end
-
-        h.WalkSpeed = CONFIG.CYCLE_WALK_SPEED
-        h:MoveTo(tgtPos)
-    end)
-
-    while not stopFlag and not arrived do
-        if tick() - tStart > CONFIG.WALK_TIMEOUT then break end
-        task.wait(0.1)
-    end
-    if conn.Connected then conn:Disconnect() end
-    return arrived
-end
-
-local function findPromptInWater()
-    local water = resolveArrayPath(CONFIG.WATER_FOLDER_PATH)
-    if not water then return nil end
-    for _, d in ipairs(water:GetDescendants()) do
-        if d:IsA("ProximityPrompt") then return d end
-    end
-    return nil
-end
-
-local function forcePrompt(prompt)
-    if not prompt then return end
-    pcall(function()
-        prompt.HoldDuration = 0
-        prompt.RequiresLineOfSight = false
-        prompt.Enabled = true
-        prompt.KeyboardKeyCode = Enum.KeyCode.E
-        prompt.ClickablePrompt = false
-        prompt.MaxActivationDistance = 30
-    end)
-end
-
--- ============================================================
--- CYCLE ACTIONS
--- ============================================================
-
--- SORE (15:00): stop farm, unlock, fire stand, walk 60, lock
-local function doSoreSequence()
-    if sequenceRunning then return false end
-    sequenceRunning = true
-    busy = true
-    addLog("ACTION", "=== SORE 15:00 → stop farm + unlock + stand + walk + lock ===")
-
-    stopFarm()
-    stopLock()
-
-    if fireRemote(CONFIG.PACKET_STAND) then
-        addLog("ACTION", "Stand fired OK")
-    else
-        addLog("ERR", "Stand fire failed")
-    end
-
-    task.wait(CONFIG.STAND_WAIT_AFTER_FIRE)
-
-    local moved, newPos = moveForward(CONFIG.STAND_WALK_STUD)
-
-    if moved and newPos then
-        startLock(newPos)
-    else
-        local _, r = getChar()
-        if r then startLock(r.Position) end
-    end
-
-    busy = false
-    sequenceRunning = false
-    addLog("ACTION", "=== SORE DONE ===")
-    return true
-end
-
--- MALAM (18:00): fire Briar 2x (tetap locked)
-local function doNightSequence()
-    if sequenceRunning then return false end
-    sequenceRunning = true
-    addLog("ACTION", "=== MALAM 18:00 → briar x" .. CONFIG.BRIAR_FIRE_COUNT .. " ===")
-
-    -- Safeguard: pastikan locked
-    if not State.locked then
-        local _, root = getChar()
-        if root then
-            addLog("LOCK", "Safeguard: belum locked, lock sekarang")
-            startLock(root.Position)
-        end
-    end
-
-    for i = 1, CONFIG.BRIAR_FIRE_COUNT do
-        if stopFlag then break end
-        if fireRemote(CONFIG.PACKET_BRIAR) then
-            addLog("ACTION", string.format("Briar #%d fired", i))
-        else
-            addLog("ERR", string.format("Briar #%d failed", i))
-        end
-        if i < CONFIG.BRIAR_FIRE_COUNT then
-            task.wait(CONFIG.BRIAR_FIRE_GAP)
-        end
-    end
-
-    sequenceRunning = false
-    addLog("ACTION", "=== MALAM DONE ===")
-    return true
-end
-
--- PAGI (06:00): unlock + walk Part4 + E 2x + resume farm
-local function doPagiSequence()
-    if sequenceRunning then return false end
-    sequenceRunning = true
-    busy = true
-    addLog("ACTION", "=== PAGI 06:00 → unlock + cauldron + resume farm ===")
-
-    stopLock()
-
-    local ok = walkToPart4()
-    if stopFlag then
-        busy = false
-        sequenceRunning = false
-        return false
-    end
-
-    if ok then
-        addLog("ACTION", "Sampai Part4 → E")
-        task.wait(0.3)
-        for i = 1, CONFIG.E_TIMES do
-            if stopFlag then break end
-            forcePrompt(findPromptInWater())
-            addLog("ACTION", "E #" .. i)
-            tapE()
-            if i < CONFIG.E_TIMES then task.wait(CONFIG.E_GAP) end
-        end
-    else
-        addLog("ERR", "Walk Part4 gagal")
-    end
-
-    busy = false
-    if running and not stopFlag then
-        startFarm()
-    end
-
-    addLog("ACTION", "=== PAGI DONE ===")
-    sequenceRunning = false
-    return true
-end
-
--- ============================================================
--- PHASE WATCHER
--- ============================================================
-local phaseConn = nil
-local lastHour = -1
-
-local function startPhaseWatcher()
-    if phaseConn then phaseConn:Disconnect() end
-    lastHour = math.floor(Lighting.ClockTime or 0)
-
-    phaseConn = RunService.Heartbeat:Connect(function()
-        if not running or stopFlag then return end
-        local ct = Lighting.ClockTime or 0
-        local hour = math.floor(ct)
-
-        if hour ~= lastHour then
-            local prev = lastHour
-            lastHour = hour
-
-            -- SORE
-            if prev < CONFIG.SORE_HOUR and hour >= CONFIG.SORE_HOUR and hour < CONFIG.NIGHT_HOUR then
-                task.spawn(doSoreSequence)
-            end
-            -- MALAM
-            if prev < CONFIG.NIGHT_HOUR and hour >= CONFIG.NIGHT_HOUR then
-                task.spawn(doNightSequence)
-            end
-            -- PAGI
-            if prev < CONFIG.PAGI_HOUR and hour >= CONFIG.PAGI_HOUR and hour < CONFIG.SORE_HOUR then
-                task.spawn(doPagiSequence)
-            end
-        end
-    end)
-end
-
-local function stopPhaseWatcher()
-    if phaseConn then phaseConn:Disconnect() phaseConn = nil end
 end
 
 -- ============================================================
@@ -1009,40 +757,33 @@ local function startAll()
     running = true
     stopFlag = false
     busy = false
-    sequenceRunning = false
 
     startFarm()
     startFoxGuard()
-    startPlayerGuard()
-    startAntiSit()
-    startLockManager()
-    startPhaseWatcher()
+    startFolderWatchers()
     task.spawn(runAlwaysClear)
 
     if _G.__SetToggle then _G.__SetToggle(true) end
-    addLog("INFO", "▶ START — farm + guard + auto-lock + cycle")
+    log("▶ START — farming + seedpack + guard + lock aktif")
 end
 
 local function stopAll()
     stopFlag = true
     running = false
-    stopPhaseWatcher()
-    stopLockManager()
     stopFarm()
     stopFoxGuard()
-    stopPlayerGuard()
-    stopAntiSit()
-    stopLock()
+    stopFolderWatchers()
     if _G.__SetToggle then _G.__SetToggle(false) end
-    addLog("INFO", "■ STOP")
+    log("■ STOP")
 end
 
 -- ============================================================
--- GUI
+-- GUI: TOGGLE ON/OFF DI KANAN, NO DRAG, BISA CLOSE
 -- ============================================================
 local COLORS = {
     bg      = Color3.fromRGB(22, 22, 28),
     text    = Color3.fromRGB(235, 235, 240),
+    textDim = Color3.fromRGB(160, 160, 175),
     green   = Color3.fromRGB(80, 200, 120),
     red     = Color3.fromRGB(200, 70, 70),
     stroke  = Color3.fromRGB(60, 60, 72),
@@ -1055,12 +796,14 @@ local function corner(p, r)
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "FarmCycleToggle"
+screenGui.Name = "FarmToggle"
 screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
 local W, H = 100, 40
+
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, W, 0, H)
 frame.Position = UDim2.new(1, -W - 12, 0.5, -H / 2)
@@ -1103,6 +846,9 @@ closeBtn.AutoButtonColor = false
 closeBtn.Parent = frame
 corner(closeBtn, 6)
 
+-- ============================================================
+-- UI HOOKS
+-- ============================================================
 _G.__SetToggle = function(on)
     if on then
         toggleBtn.Text = "ON"
@@ -1137,5 +883,4 @@ end)
 -- ============================================================
 runClearMapOnce()
 _G.__SetToggle(false)
-addLog("INFO", "Loaded | toggle ON/OFF di kanan layar")
-addLog("INFO", "15:00 sore | 18:00 malam | 06:00 pagi | auto-lock saat idle")
+log("Loaded | toggle ON/OFF di kanan layar | lock position pakai ChildAdded/ChildRemoved")
