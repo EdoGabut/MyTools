@@ -1,9 +1,8 @@
 -- ============================================================
--- Crate Sender v2
--- - Kirim 1 per 1 (single send)
--- - Tampil crate + count di tas/toolbar
--- - Klik item buat kirim
--- - Langsung kirim ke ID lu (11142670172)
+-- Crate Sender Single
+-- - Kirim 1 crate per klik
+-- - Header: 8C 01 [UserID] 42 1C 05 01 1C
+-- - Langsung ke ID lu (11142670172)
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -27,9 +26,9 @@ local ITEMS = {
 local HOTBAR_PATH   = { "BackpackGui", "Backpack", "Hotbar" }
 local BACKPACK_PATH = { "BackpackGui", "Backpack", "Inventory", "ScrollingFrame", "UIGridFrame" }
 
--- ===== PAYLOAD BUILDER (SINGLE) =====
--- Header: 8C 01 [UserID f64] 1C 05 01 1C
--- Entry: 05 01 1C "ItemKey" [nama] "Count" [n] "Category" [cat] 00
+-- ===== PAYLOAD BUILDER (SINGLE - HEADER FIXED) =====
+-- Header: 8C 01 [UserID f64] 42 1C 05 01 1C
+-- Entry: 0B 07 "ItemKey" [nama] 0B 05 "Count" 05 [n] 0B 08 "Category" 0B [len] [cat] 00
 local function buildSinglePayload(targetUserId, itemName, count, category)
 	local buf = buffer.create(512)
 	local pos = 0
@@ -40,17 +39,16 @@ local function buildSinglePayload(targetUserId, itemName, count, category)
 	end
 	local function writeInt(n) writeU8(0x05); writeU8(n) end
 
-	-- Header
+	-- Header (FIXED: ada 42 1C)
 	writeU8(0x8C); writeU8(0x01)
 	buffer.writef64(buf, pos, targetUserId); pos += 8
-	writeU8(0x1C); writeU8(0x05); writeU8(0x01); writeU8(0x1C)
+	writeU8(0x42); writeU8(0x1C)          -- ← ini yang bikin bener
+	writeU8(0x05); writeU8(0x01); writeU8(0x1C)  -- ← entry prefix
 
-	-- Single entry (index 01)
-	writeU8(0x05); writeU8(0x01); writeU8(0x1C)
+	-- Item data
 	writeString("ItemKey"); writeString(itemName)
 	writeString("Count"); writeInt(count)
 	writeString("Category"); writeString(category)
-	writeU8(0x00)
 
 	-- Terminator
 	writeU8(0x00); writeU8(0x00); writeU8(0x00)
@@ -97,15 +95,14 @@ local function scanContainer(container)
 end
 
 local function scanAll()
-	local hotbarMap = scanContainer(resolveFromPlayerGui(HOTBAR_PATH))
-	local backpackMap = scanContainer(resolveFromPlayerGui(BACKPACK_PATH))
 	local combined = {}
-	for _, map in pairs({ hotbarMap, backpackMap }) do
+	for _, path in ipairs({ HOTBAR_PATH, BACKPACK_PATH }) do
+		local map = scanContainer(resolveFromPlayerGui(path))
 		for name, count in pairs(map) do
 			combined[name] = (combined[name] or 0) + count
 		end
 	end
-	return combined, hotbarMap, backpackMap
+	return combined
 end
 
 local function lookupCount(map, itemName)
@@ -135,7 +132,6 @@ local COLORS = {
 	text      = Color3.fromRGB(235, 235, 240),
 	textDim   = Color3.fromRGB(140, 140, 155),
 	green     = Color3.fromRGB(80, 200, 120),
-	greenHv   = Color3.fromRGB(100, 220, 140),
 	red       = Color3.fromRGB(200, 70, 70),
 	disabled  = Color3.fromRGB(60, 60, 70),
 	stroke    = Color3.fromRGB(60, 60, 72),
@@ -274,14 +270,11 @@ local rowRefs = {}
 local yStart = 26
 local rowHeight = 40
 local rowGap = 4
-
--- Refresh function (dideklarasi dulu biar bisa dipake di click)
 local refreshStatus
 
 for i, item in ipairs(ITEMS) do
 	local y = yStart + (i - 1) * (rowHeight + rowGap)
 
-	-- TextButton biar bisa diklik
 	local row = Instance.new("TextButton")
 	row.Size = UDim2.new(1, 0, 0, rowHeight)
 	row.Position = UDim2.new(0, 0, 0, y)
@@ -338,7 +331,6 @@ for i, item in ipairs(ITEMS) do
 		item = item,
 	}
 
-	-- Hover
 	row.MouseEnter:Connect(function()
 		if rowRefs[item.display].count > 0 then
 			TweenService:Create(row, TweenInfo.new(0.1), {
@@ -352,7 +344,6 @@ for i, item in ipairs(ITEMS) do
 		}):Play()
 	end)
 
-	-- Click = kirim
 	row.MouseButton1Click:Connect(function()
 		local ref = rowRefs[item.display]
 		if not ref then return end
@@ -368,12 +359,11 @@ for i, item in ipairs(ITEMS) do
 
 		local count = math.min(ref.count, 255)
 
-		-- Flash loading
 		ref.detailLbl.Text = "⏳ Mengirim..."
 		ref.detailLbl.TextColor3 = COLORS.green
 		row.BackgroundColor3 = COLORS.rowActive
 
-		-- Build payload single
+		-- Single payload
 		local payload = buildSinglePayload(TARGET_USER_ID, item.name, count, item.category)
 
 		local ok = pcall(function()
@@ -411,7 +401,6 @@ refreshStatus = function()
 			if count > 0 then
 				ref.countLbl.TextColor3 = COLORS.green
 				ref.nameLbl.TextColor3 = COLORS.text
-				ref.row.BackgroundColor3 = COLORS.row
 			else
 				ref.countLbl.TextColor3 = COLORS.disabled
 				ref.nameLbl.TextColor3 = COLORS.textDim
