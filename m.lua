@@ -1,8 +1,9 @@
 -- ============================================================
--- Crate Tracker (Minimalist)
+-- Crate Tracker + Auto Cycle
 -- ============================================================
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
+local RS = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 
 -- ===== CONFIG =====
@@ -16,6 +17,24 @@ local HOTBAR_PATH   = { "BackpackGui", "Backpack", "Hotbar" }
 local BACKPACK_PATH = { "BackpackGui", "Backpack", "Inventory", "ScrollingFrame", "UIGridFrame" }
 local TOOL_NAME_LABEL  = "ToolName"
 local TOOL_COUNT_LABEL = "ToolCount"
+
+-- Cycle config
+local CYCLE_DELAY    = 5       -- jeda antar crate (detik)
+local MAX_FIRE       = 30      -- total fire sebelum cooldown
+local COOLDOWN_TIME  = 2 * 60 * 60  -- 2 jam (detik)
+
+-- Packet payload per crate
+local PACKETS = {
+	["Gravestone Crate"] = buffer.fromstring(
+		"\133\001$\015Rare Magic Mail\006Crates\016Gravestone Crate\000\000\000\000\000\000\240?"
+	),
+	["Halloween Prop Crate"] = buffer.fromstring(
+		"\133\001i\015Rare Magic Mail\006Crates\020Halloween Prop Crate\000\000\000\000\000\000\240?"
+	),
+	["Fog Machine Crate"] = buffer.fromstring(
+		"\133\0013\020Legendary Magic Mail\006Crates\017Fog Machine Crate\000\000\000\000\000\000\240?"
+	),
+}
 
 -- ===== SCANNER =====
 local function resolve(parts)
@@ -62,6 +81,34 @@ local function lookup(map, name)
 	return 0
 end
 
+local function getCount(crate)
+	local h = scanContainer(resolve(HOTBAR_PATH))
+	local b = scanContainer(resolve(BACKPACK_PATH))
+	return lookup(h, crate) + lookup(b, crate)
+end
+
+-- ===== REMOTE =====
+local function getRemote()
+	local ok, remote = pcall(function()
+		return RS:WaitForChild("SharedModules", 10)
+			:WaitForChild("Packet", 10)
+			:WaitForChild("RemoteEvent", 10)
+	end)
+	if ok then return remote end
+	return nil
+end
+
+local function fireCrate(crate)
+	local packet = PACKETS[crate]
+	if not packet then return false end
+	local remote = getRemote()
+	if not remote then return false end
+	local ok = pcall(function()
+		remote:FireServer(packet)
+	end)
+	return ok
+end
+
 -- ============================================================
 -- ===== GUI =====
 -- ============================================================
@@ -76,6 +123,7 @@ local COLORS = {
 	dim    = Color3.fromRGB(130, 130, 145),
 	green  = Color3.fromRGB(80, 200, 120),
 	red    = Color3.fromRGB(200, 70, 70),
+	orange = Color3.fromRGB(230, 160, 60),
 	stroke = Color3.fromRGB(55, 55, 65),
 }
 
@@ -87,7 +135,7 @@ end
 
 -- ===== MAIN FRAME =====
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 200, 0, 26)
+frame.Size = UDim2.new(0, 220, 0, 26)
 frame.Position = UDim2.new(0, 15, 0, 15)
 frame.BackgroundColor3 = COLORS.bg
 frame.BackgroundTransparency = 0.15
@@ -127,14 +175,14 @@ UIS.InputChanged:Connect(function(input)
 	end
 end)
 
--- ===== HEADER (title + toggle + close) =====
+-- ===== HEADER =====
 local header = Instance.new("Frame")
 header.Size = UDim2.new(1, 0, 0, 26)
 header.BackgroundTransparency = 1
 header.Parent = frame
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -50, 1, 0)
+title.Size = UDim2.new(1, -70, 1, 0)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
 title.Text = "Crates"
@@ -144,16 +192,27 @@ title.TextSize = 11
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = header
 
--- Toggle button
+-- Toggle button (scan on/off)
 local toggleBtn = Instance.new("TextButton")
 toggleBtn.Size = UDim2.new(0, 16, 0, 16)
-toggleBtn.Position = UDim2.new(1, -40, 0, 5)
+toggleBtn.Position = UDim2.new(1, -60, 0, 5)
 toggleBtn.BackgroundColor3 = COLORS.green
 toggleBtn.Text = ""
 toggleBtn.BorderSizePixel = 0
 toggleBtn.AutoButtonColor = false
 toggleBtn.Parent = header
 corner(toggleBtn, 4)
+
+-- Cycle button (auto fire on/off)
+local cycleBtn = Instance.new("TextButton")
+cycleBtn.Size = UDim2.new(0, 16, 0, 16)
+cycleBtn.Position = UDim2.new(1, -40, 0, 5)
+cycleBtn.BackgroundColor3 = COLORS.dim
+cycleBtn.Text = ""
+cycleBtn.BorderSizePixel = 0
+cycleBtn.AutoButtonColor = false
+cycleBtn.Parent = header
+corner(cycleBtn, 4)
 
 -- Close button
 local closeBtn = Instance.new("TextButton")
@@ -169,9 +228,9 @@ closeBtn.AutoButtonColor = false
 closeBtn.Parent = header
 corner(closeBtn, 4)
 
--- ===== BODY (list) =====
+-- ===== BODY =====
 local body = Instance.new("Frame")
-body.Size = UDim2.new(1, 0, 0, #CRATE_LIST * 18)
+body.Size = UDim2.new(1, 0, 0, (#CRATE_LIST * 18) + 30)
 body.Position = UDim2.new(0, 0, 0, 26)
 body.BackgroundTransparency = 1
 body.Parent = frame
@@ -194,11 +253,33 @@ for i, crate in ipairs(CRATE_LIST) do
 	rowLabels[crate] = row
 end
 
--- Resize frame tinggi total
-local FULL_HEIGHT = 26 + (#CRATE_LIST * 18) + 4
+-- Status line
+local statusLbl = Instance.new("TextLabel")
+statusLbl.Size = UDim2.new(1, -20, 0, 16)
+statusLbl.Position = UDim2.new(0, 10, 0, #CRATE_LIST * 18 + 6)
+statusLbl.BackgroundTransparency = 1
+statusLbl.Text = "Fire: 0 / " .. MAX_FIRE .. "  |  IDLE"
+statusLbl.TextColor3 = COLORS.dim
+statusLbl.Font = Enum.Font.Code
+statusLbl.TextSize = 10
+statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+statusLbl.Parent = body
+
+local FULL_HEIGHT = 26 + (#CRATE_LIST * 18) + 30
 local MIN_HEIGHT = 26
 
+-- ============================================================
+-- ===== STATE =====
+-- ============================================================
+local scanActive = true
+local cycleActive = false
+local fireCount = 0
+local cooldownUntil = 0  -- os.clock() target
+local currentIndex = 1   -- index crate yang sedang diproses
+
+-- ============================================================
 -- ===== REFRESH =====
+-- ============================================================
 local function refresh()
 	local hotbar = scanContainer(resolve(HOTBAR_PATH))
 	local backpack = scanContainer(resolve(BACKPACK_PATH))
@@ -214,36 +295,131 @@ local function refresh()
 	end
 end
 
--- ===== TOGGLE ON/OFF =====
-local active = true
+-- ============================================================
+-- ===== STATUS UPDATE =====
+-- ============================================================
+local function updateStatus()
+	if os.clock() < cooldownUntil then
+		local remaining = math.floor(cooldownUntil - os.clock())
+		local h = math.floor(remaining / 3600)
+		local m = math.floor((remaining % 3600) / 60)
+		local s = remaining % 60
+		statusLbl.Text = string.format("COOLDOWN: %02d:%02d:%02d", h, m, s)
+		statusLbl.TextColor3 = COLORS.orange
+	elseif cycleActive then
+		local crate = CRATE_LIST[currentIndex] or "?"
+		statusLbl.Text = string.format("Fire: %d/%d  |  %s", fireCount, MAX_FIRE, crate)
+		statusLbl.TextColor3 = COLORS.green
+	else
+		statusLbl.Text = string.format("Fire: %d/%d  |  IDLE", fireCount, MAX_FIRE)
+		statusLbl.TextColor3 = COLORS.dim
+	end
+end
 
+-- ============================================================
+-- ===== CYCLE LOOP =====
+-- ============================================================
+task.spawn(function()
+	while screenGui.Parent do
+		if cycleActive and os.clock() >= cooldownUntil then
+			-- Reset fireCount kalau udah lewat cooldown
+			if fireCount >= MAX_FIRE then
+				fireCount = 0
+			end
+
+			-- Cek apakah semua crate kosong
+			local anyAvail = false
+			for _, crate in ipairs(CRATE_LIST) do
+				if getCount(crate) > 0 then
+					anyAvail = true
+					break
+				end
+			end
+
+			if not anyAvail then
+				statusLbl.Text = "NO CRATES  |  WAITING..."
+				statusLbl.TextColor3 = COLORS.orange
+				task.wait(2)
+			else
+				local crate = CRATE_LIST[currentIndex]
+
+				if getCount(crate) > 0 then
+					-- Fire!
+					local ok = fireCrate(crate)
+					if ok then
+						fireCount = fireCount + 1
+						updateStatus()
+					end
+
+					-- Cek batas fire
+					if fireCount >= MAX_FIRE then
+						cooldownUntil = os.clock() + COOLDOWN_TIME
+						updateStatus()
+						task.wait(1)
+					else
+						-- Lanjut ke crate berikutnya setelah jeda
+						currentIndex = currentIndex % #CRATE_LIST + 1
+						task.wait(CYCLE_DELAY)
+					end
+				else
+					-- Skip crate kosong, lanjut ke berikutnya tanpa jeda panjang
+					currentIndex = currentIndex % #CRATE_LIST + 1
+					task.wait(0.5)
+				end
+			end
+		else
+			updateStatus()
+			task.wait(1)
+		end
+	end
+end)
+
+-- ============================================================
+-- ===== BUTTON HANDLERS =====
+-- ============================================================
 toggleBtn.MouseButton1Click:Connect(function()
-	active = not active
-	if active then
+	scanActive = not scanActive
+	if scanActive then
 		toggleBtn.BackgroundColor3 = COLORS.green
 		body.Visible = true
-		frame.Size = UDim2.new(0, 200, 0, FULL_HEIGHT)
+		frame.Size = UDim2.new(0, 220, 0, FULL_HEIGHT)
 		pcall(refresh)
 	else
 		toggleBtn.BackgroundColor3 = COLORS.dim
 		body.Visible = false
-		frame.Size = UDim2.new(0, 200, 0, MIN_HEIGHT)
+		frame.Size = UDim2.new(0, 220, 0, MIN_HEIGHT)
 	end
 end)
 
--- ===== CLOSE (stop execute) =====
+cycleBtn.MouseButton1Click:Connect(function()
+	cycleActive = not cycleActive
+	if cycleActive then
+		cycleBtn.BackgroundColor3 = COLORS.green
+		fireCount = 0
+		currentIndex = 1
+		cooldownUntil = 0
+		updateStatus()
+	else
+		cycleBtn.BackgroundColor3 = COLORS.dim
+		updateStatus()
+	end
+end)
+
 closeBtn.MouseButton1Click:Connect(function()
 	screenGui:Destroy()
 end)
 
--- ===== MAIN LOOP =====
+-- ============================================================
+-- ===== SCAN LOOP =====
+-- ============================================================
 task.spawn(function()
 	while screenGui.Parent do
-		if active then pcall(refresh) end
+		if scanActive then pcall(refresh) end
 		task.wait(1)
 	end
 end)
 
 -- ===== INIT =====
 pcall(refresh)
+updateStatus()
 print("[Crate Tracker] Loaded")
