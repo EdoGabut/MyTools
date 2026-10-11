@@ -1,6 +1,6 @@
 -- ============================================================
--- FARM PUMPKIN + MONSTER + SEEDPACK + GUARD + LOCK POSITION
--- Lock pakai ChildAdded/ChildRemoved + posisi check
+-- FARM PUMPKIN + MONSTER + SEEDPACK + GUARD + LOCK (ANCHORED)
+-- Anti-dorong ke altar | Event-driven lock | WalkSpeed 30
 -- ============================================================
 local Players            = game:GetService("Players")
 local RunService         = game:GetService("RunService")
@@ -38,9 +38,9 @@ local CONFIG = {
     FOX_SCAN_ACTIVE    = 0.05,
     FOX_SCAN_IDLE      = 0.20,
 
-    -- ===== Lock Position =====
+    -- ===== Lock Position (Anchored) =====
     LOCK_ENABLED       = true,
-    LOCK_CHECK_INTERVAL= 0.1,   -- cek posisi ringan (bukan Heartbeat)
+    LOCK_CHECK_INTERVAL= 0.1,
 
     -- ===== Clear Map =====
     CLEAR_MAP = {
@@ -86,13 +86,13 @@ local foxIdleState = true
 local foxTotal = 0
 local foxInRange = 0
 
--- Lock position
+-- Lock
 local lockActive = false
 local lockPosition = nil
 local lockRoot = nil
 local lockLoopToken = 0
 local lockFolderConns = {}
-local targetCount = 0   -- jumlah target aktif (monster + pumpkin + seedpack)
+local targetCount = 0
 
 -- ============================================================
 -- HELPERS
@@ -471,7 +471,7 @@ local function runFarmMode(hum, root, monsterFolder, pumpkinFolder, myToken, isR
 end
 
 -- ============================================================
--- LOCK POSITION (pakai ChildAdded/ChildRemoved + posisi check)
+-- LOCK POSITION (ANCHORED)
 -- ============================================================
 local function countTargets()
     local monsterFolder = resolvePath(CONFIG.MONSTER_FOLDER)
@@ -496,6 +496,11 @@ local function lockStart(root)
     lockRoot = root
     lockPosition = root.CFrame
 
+    -- ANCHOR: anti-dorong total
+    if root then
+        pcall(function() root.Anchored = true end)
+    end
+
     lockLoopToken += 1
     local myToken = lockLoopToken
 
@@ -507,17 +512,22 @@ local function lockStart(root)
             if char then
                 local hum = char:FindFirstChildOfClass("Humanoid")
                 if hum then
-                    -- stop movement biar ga jalan
                     hum:Move(Vector3.zero, false)
                 end
             end
 
-            -- cek posisi: kalau bergeser, balikin
+            -- jaga-jaga kalau ada script lain unanchor
+            if lockRoot and not lockRoot.Anchored then
+                pcall(function() lockRoot.Anchored = true end)
+            end
+
+            -- jaga-jaga kalau CFrame berubah
             if lockRoot then
                 local cur = lockRoot.CFrame
                 local dx = cur.Position.X - lockPosition.Position.X
+                local dy = cur.Position.Y - lockPosition.Position.Y
                 local dz = cur.Position.Z - lockPosition.Position.Z
-                local dist = math.sqrt(dx*dx + dz*dz)
+                local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
                 if dist > 0.05 then
                     lockRoot.CFrame = lockPosition
                 end
@@ -529,6 +539,10 @@ local function lockStart(root)
 end
 
 local function lockStop()
+    -- UNANCHOR dulu
+    if lockRoot and lockRoot.Parent then
+        pcall(function() lockRoot.Anchored = false end)
+    end
     lockActive = false
     lockPosition = nil
     lockRoot = nil
@@ -536,15 +550,13 @@ local function lockStop()
 end
 
 -- ============================================================
--- FOLDER WATCHER (ChildAdded / ChildRemoved)
+-- FOLDER WATCHER
 -- ============================================================
 local function refreshLockState()
     targetCount = countTargets()
     if targetCount > 0 then
-        -- ada target → unlock
         if lockActive then lockStop() end
     else
-        -- kosong semua → lock
         local char = player.Character
         if char then
             local root = char:FindFirstChild("HumanoidRootPart")
@@ -556,31 +568,22 @@ end
 local function watchFolder(folder)
     if not folder then return end
 
-    local function onChildAdded(child)
-        refreshLockState()
-    end
-    local function onChildRemoved(child)
-        refreshLockState()
-    end
-
-    local c1 = folder.ChildAdded:Connect(onChildAdded)
-    local c2 = folder.ChildRemoved:Connect(onChildRemoved)
-    table.insert(lockFolderConns, c1)
-    table.insert(lockFolderConns, c2)
-
-    -- watch descendants untuk seedpack (ProximityPrompt di dalam folder)
+    local c1 = folder.ChildAdded:Connect(function() refreshLockState() end)
+    local c2 = folder.ChildRemoved:Connect(function() refreshLockState() end)
     local c3 = folder.DescendantAdded:Connect(function(d)
         if d:IsA("ProximityPrompt") then refreshLockState() end
     end)
     local c4 = folder.DescendantRemoving:Connect(function(d)
         if d:IsA("ProximityPrompt") then refreshLockState() end
     end)
+
+    table.insert(lockFolderConns, c1)
+    table.insert(lockFolderConns, c2)
     table.insert(lockFolderConns, c3)
     table.insert(lockFolderConns, c4)
 end
 
 local function startFolderWatchers()
-    -- disconnect lama
     for _, c in ipairs(lockFolderConns) do
         pcall(function() c:Disconnect() end)
     end
@@ -594,7 +597,6 @@ local function startFolderWatchers()
     watchFolder(pumpkinFolder)
     watchFolder(seedFolder)
 
-    -- refresh awal
     refreshLockState()
 end
 
@@ -654,7 +656,6 @@ local function mainFarmLoop()
         if busy then
             task.wait(0.1)
         else
-            -- kalau lock aktif, jangan farming
             if lockActive then
                 task.wait(0.15)
             else
@@ -764,7 +765,7 @@ local function startAll()
     task.spawn(runAlwaysClear)
 
     if _G.__SetToggle then _G.__SetToggle(true) end
-    log("▶ START — farming + seedpack + guard + lock aktif")
+    log("▶ START — farming + seedpack + guard + lock(anchored) aktif")
 end
 
 local function stopAll()
@@ -778,7 +779,7 @@ local function stopAll()
 end
 
 -- ============================================================
--- GUI: TOGGLE ON/OFF DI KANAN, NO DRAG, BISA CLOSE
+-- GUI: TOGGLE ON/OFF DI KANAN
 -- ============================================================
 local COLORS = {
     bg      = Color3.fromRGB(22, 22, 28),
@@ -883,4 +884,4 @@ end)
 -- ============================================================
 runClearMapOnce()
 _G.__SetToggle(false)
-log("Loaded | toggle ON/OFF di kanan layar | lock position pakai ChildAdded/ChildRemoved")
+log("Loaded | lock pakai Anchored | anti-dorong ke altar")
