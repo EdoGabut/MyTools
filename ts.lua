@@ -1,15 +1,13 @@
 -- ============================================
--- TEXT SEARCH TOOL v2
--- - Cari di semua TextLabel/TextButton/TextBox
--- - Copy path lengkap per hasil
--- - Copy text per hasil
--- - Copy semua (path + text)
+-- TEXT SEARCH TOOL v3
+-- - Scan SEMUA TextLabel/TextButton/TextBox
+-- - Termasuk BillboardGui, SurfaceGui, ScreenGui
+-- - Termasuk PlayerGui, CoreGui, ReplicatedStorage
+-- - Copy path lengkap + text
 -- ============================================
 
 local CoreGui = game:GetService("CoreGui")
-
--- Scope pencarian
-local SEARCH_ROOT = workspace
+local Players = game:GetService("Players")
 
 -- ============ GUI ============
 
@@ -20,11 +18,12 @@ local gui = Instance.new("ScreenGui")
 gui.Name = "TextSearchGUI"
 gui.ResetOnSpawn = false
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.DisplayOrder = 999
 gui.Parent = CoreGui
 
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0, 520, 0, 620)
-main.Position = UDim2.new(0, 20, 0, 60)
+main.Size = UDim2.new(0, 540, 0, 640)
+main.Position = UDim2.new(0, 20, 0, 40)
 main.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
 main.BorderSizePixel = 0
 main.Active = true
@@ -40,7 +39,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, 0, 0, 32)
 title.BackgroundColor3 = Color3.fromRGB(40, 40, 52)
 title.BorderSizePixel = 0
-title.Text = "  🔍 Text Search Tool v2"
+title.Text = "  🔍 Text Search v3 — Global Scan"
 title.TextColor3 = Color3.fromRGB(230, 230, 240)
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Font = Enum.Font.GothamBold
@@ -65,7 +64,7 @@ closeBtn.MouseButton1Click:Connect(function() gui:Destroy() end)
 -- ============ SEARCH INPUT ============
 
 local searchFrame = Instance.new("Frame")
-searchFrame.Size = UDim2.new(1, -16, 0, 64)
+searchFrame.Size = UDim2.new(1, -16, 0, 90)
 searchFrame.Position = UDim2.new(0, 8, 0, 40)
 searchFrame.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
 searchFrame.BorderSizePixel = 0
@@ -112,7 +111,7 @@ local sbCorner = Instance.new("UICorner")
 sbCorner.CornerRadius = UDim.new(0, 4)
 sbCorner.Parent = searchBtn
 
--- Options
+-- Scope checkboxes
 local optFrame = Instance.new("Frame")
 optFrame.Size = UDim2.new(1, -16, 0, 22)
 optFrame.Position = UDim2.new(0, 8, 0, 42)
@@ -142,25 +141,40 @@ local function makeCheckbox(parent, xPos, labelText, default)
 end
 
 local caseBox = makeCheckbox(optFrame, 0, "Case Sensitive", false)
-local wsOnlyBox = makeCheckbox(optFrame, 140, "Workspace Only", true)
+local richTextBox = makeCheckbox(optFrame, 140, "Search Raw", false)
 local showPathBox = makeCheckbox(optFrame, 280, "Show Path", true)
 
--- ============ RESULTS ============
+-- Scope checkboxes (row 2)
+local scopeFrame = Instance.new("Frame")
+scopeFrame.Size = UDim2.new(1, -16, 0, 22)
+scopeFrame.Position = UDim2.new(0, 8, 0, 64)
+scopeFrame.BackgroundTransparency = 1
+scopeFrame.Parent = searchFrame
+
+local wsBox = makeCheckbox(scopeFrame, 0, "Workspace", true)
+local guiBox = makeCheckbox(scopeFrame, 130, "PlayerGui/CoreGui", true)
+local allBox = makeCheckbox(scopeFrame, 280, "Seluruh Game", false)
+
+-- ============ RESULT INFO ============
 
 local resultInfo = Instance.new("TextLabel")
-resultInfo.Size = UDim2.new(1, -16, 0, 20)
-resultInfo.Position = UDim2.new(0, 8, 0, 110)
+resultInfo.Size = UDim2.new(1, -16, 0, 36)
+resultInfo.Position = UDim2.new(0, 8, 0, 136)
 resultInfo.BackgroundTransparency = 1
 resultInfo.Text = "Masukkan keyword, lalu klik Cari."
 resultInfo.TextColor3 = Color3.fromRGB(180, 200, 255)
 resultInfo.Font = Enum.Font.Gotham
 resultInfo.TextSize = 11
 resultInfo.TextXAlignment = Enum.TextXAlignment.Left
+resultInfo.TextYAlignment = Enum.TextYAlignment.Top
+resultInfo.TextWrapped = true
 resultInfo.Parent = main
 
+-- ============ RESULTS LIST ============
+
 local resultFrame = Instance.new("ScrollingFrame")
-resultFrame.Size = UDim2.new(1, -16, 1, -180)
-resultFrame.Position = UDim2.new(0, 8, 0, 134)
+resultFrame.Size = UDim2.new(1, -16, 1, -260)
+resultFrame.Position = UDim2.new(0, 8, 0, 178)
 resultFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
 resultFrame.BorderSizePixel = 0
 resultFrame.ScrollBarThickness = 6
@@ -185,14 +199,14 @@ rfPad.PaddingLeft = UDim.new(0, 4)
 rfPad.PaddingRight = UDim.new(0, 4)
 rfPad.Parent = resultFrame
 
--- Bottom buttons
+-- ============ BOTTOM BUTTONS ============
+
 local btnFrame = Instance.new("Frame")
 btnFrame.Size = UDim2.new(1, -16, 0, 64)
 btnFrame.Position = UDim2.new(0, 8, 1, -72)
 btnFrame.BackgroundTransparency = 1
 btnFrame.Parent = main
 
--- Row 1: Copy All
 local copyAllBtn = Instance.new("TextButton")
 copyAllBtn.Size = UDim2.new(0.5, -4, 0, 28)
 copyAllBtn.Position = UDim2.new(0, 0, 0, 0)
@@ -221,7 +235,6 @@ local capCorner = Instance.new("UICorner")
 capCorner.CornerRadius = UDim.new(0, 5)
 capCorner.Parent = copyAllPathsBtn
 
--- Row 2: Copy All Texts + Clear
 local copyAllTextsBtn = Instance.new("TextButton")
 copyAllTextsBtn.Size = UDim2.new(0.5, -4, 0, 28)
 copyAllTextsBtn.Position = UDim2.new(0, 0, 0, 32)
@@ -252,7 +265,7 @@ clbCorner.Parent = clearBtn
 
 -- ============ STATE ============
 
-local results = {}  -- array of {instance, text, plain, path, className}
+local results = {}
 
 -- ============ UTIL ============
 
@@ -287,6 +300,31 @@ local function flashButton(btn, newText, color)
     end)
 end
 
+-- ============ SCAN ROOTS ============
+
+local function getRoots()
+    local roots = {}
+    local ws = wsBox:GetAttribute("Checked")
+    local guiScan = guiBox:GetAttribute("Checked")
+    local all = allBox:GetAttribute("Checked")
+
+    if all then
+        -- Scan SELURUH game
+        table.insert(roots, game)
+    else
+        if ws then table.insert(roots, workspace) end
+        if guiScan then
+            table.insert(roots, CoreGui)
+            for _, p in ipairs(Players:GetPlayers()) do
+                local pg = p:FindFirstChild("PlayerGui")
+                if pg then table.insert(roots, pg) end
+            end
+        end
+    end
+
+    return roots
+end
+
 -- ============ SEARCH ============
 
 local function clearResults()
@@ -296,47 +334,80 @@ local function clearResults()
     results = {}
 end
 
-local function searchText(root, keyword, caseSensitive, showPath)
-    results = {}
+local function isTextObject(inst)
+    return inst:IsA("TextLabel")
+        or inst:IsA("TextButton")
+        or inst:IsA("TextBox")
+        or inst:IsA("Text")
+end
 
-    for _, desc in ipairs(root:GetDescendants()) do
-        if desc:IsA("TextLabel") or desc:IsA("TextButton") or desc:IsA("TextBox") then
-            local rawText = desc.Text or ""
-            if rawText ~= "" then
-                local plainText = stripRichText(rawText)
+local function searchInRoot(root, keyword, caseSensitive, searchRaw)
+    local found = 0
+    local seen = {}
 
-                local haystack = plainText
-                local needle = keyword
-                if not caseSensitive then
-                    haystack = haystack:lower()
-                    needle = needle:lower()
-                end
+    local ok, err = pcall(function()
+        for _, desc in ipairs(root:GetDescendants()) do
+            if isTextObject(desc) and not seen[desc] then
+                seen[desc] = true
 
-                if haystack:find(needle, 1, true) then
-                    table.insert(results, {
-                        instance = desc,
-                        text = rawText,
-                        plain = plainText,
-                        path = desc:GetFullName(),
-                        className = desc.ClassName,
-                    })
+                local rawText = desc.Text or ""
+                if rawText ~= "" then
+                    -- Tentukan haystack
+                    local haystack
+                    if searchRaw then
+                        haystack = rawText
+                    else
+                        haystack = stripRichText(rawText)
+                    end
+
+                    local needle = keyword
+                    if not caseSensitive then
+                        haystack = haystack:lower()
+                        needle = needle:lower()
+                    end
+
+                    if haystack:find(needle, 1, true) then
+                        found = found + 1
+                        table.insert(results, {
+                            instance = desc,
+                            text = rawText,
+                            plain = stripRichText(rawText),
+                            path = desc:GetFullName(),
+                            className = desc.ClassName,
+                            parentGuiType = getParentGuiType(desc),
+                        })
+                    end
                 end
             end
         end
-    end
+    end)
 
-    return #results
+    return found, err
 end
+
+-- Detect tipe GUI parent (ScreenGui, BillboardGui, SurfaceGui, dll)
+function getParentGuiType(inst)
+    local p = inst
+    while p do
+        if p:IsA("BillboardGui") then return "BillboardGui"
+        elseif p:IsA("SurfaceGui") then return "SurfaceGui"
+        elseif p:IsA("ScreenGui") then return "ScreenGui"
+        end
+        p = p.Parent
+    end
+    return "?"
+end
+
+-- ============ RENDER ============
 
 local function renderResults(showPath)
     clearResults()
-
     -- Note: results udah diisi sebelum render
-    -- Kita re-render pakai results yang ada
+
     local count = #results
 
     for i, r in ipairs(results) do
-        local rowHeight = showPath and 60 or 40
+        local rowHeight = showPath and 62 or 42
 
         local row = Instance.new("Frame")
         row.Size = UDim2.new(1, 0, 0, rowHeight)
@@ -364,9 +435,9 @@ local function renderResults(showPath)
         numLbl.TextYAlignment = Enum.TextYAlignment.Top
         numLbl.Parent = row
 
-        -- Text content (yang beneran tampil)
+        -- Text content
         local textLbl = Instance.new("TextLabel")
-        textLbl.Size = UDim2.new(1, -140, 0, 18)
+        textLbl.Size = UDim2.new(1, -160, 0, 18)
         textLbl.Position = UDim2.new(0, 36, 0, 4)
         textLbl.BackgroundTransparency = 1
         textLbl.Text = r.plain
@@ -377,19 +448,19 @@ local function renderResults(showPath)
         textLbl.TextTruncate = Enum.TextTruncate.AtEnd
         textLbl.Parent = row
 
-        -- ClassName
+        -- ClassName + GUI type
         local classLbl = Instance.new("TextLabel")
-        classLbl.Size = UDim2.new(1, -140, 0, 14)
+        classLbl.Size = UDim2.new(1, -160, 0, 14)
         classLbl.Position = UDim2.new(0, 36, 0, 22)
         classLbl.BackgroundTransparency = 1
-        classLbl.Text = r.className
+        classLbl.Text = r.className .. " • " .. r.parentGuiType
         classLbl.TextColor3 = Color3.fromRGB(140, 140, 180)
         classLbl.Font = Enum.Font.Gotham
         classLbl.TextSize = 9
         classLbl.TextXAlignment = Enum.TextXAlignment.Left
         classLbl.Parent = row
 
-        -- Path (kalau showPath)
+        -- Path
         if showPath then
             local pathLbl = Instance.new("TextLabel")
             pathLbl.Size = UDim2.new(1, -40, 0, 16)
@@ -404,10 +475,10 @@ local function renderResults(showPath)
             pathLbl.Parent = row
         end
 
-        -- Tombol Copy Path (kanan atas)
+        -- Copy Path
         local copyPathBtn = Instance.new("TextButton")
-        copyPathBtn.Size = UDim2.new(0, 48, 0, 20)
-        copyPathBtn.Position = UDim2.new(1, -54, 0, 4)
+        copyPathBtn.Size = UDim2.new(0, 56, 0, 20)
+        copyPathBtn.Position = UDim2.new(1, -62, 0, 4)
         copyPathBtn.BackgroundColor3 = Color3.fromRGB(50, 80, 120)
         copyPathBtn.Text = "Path"
         copyPathBtn.TextColor3 = Color3.fromRGB(220, 220, 240)
@@ -426,10 +497,10 @@ local function renderResults(showPath)
                 ok and Color3.fromRGB(40, 140, 70) or Color3.fromRGB(140, 60, 60))
         end)
 
-        -- Tombol Copy Text (kanan bawah)
+        -- Copy Text
         local copyTextBtn = Instance.new("TextButton")
-        copyTextBtn.Size = UDim2.new(0, 48, 0, 20)
-        copyTextBtn.Position = UDim2.new(1, -54, 0, 28)
+        copyTextBtn.Size = UDim2.new(0, 56, 0, 20)
+        copyTextBtn.Position = UDim2.new(1, -62, 0, 28)
         copyTextBtn.BackgroundColor3 = Color3.fromRGB(80, 60, 120)
         copyTextBtn.Text = "Text"
         copyTextBtn.TextColor3 = Color3.fromRGB(220, 220, 240)
@@ -463,35 +534,43 @@ local function doSearch()
     clearResults()
 
     local caseSensitive = caseBox:GetAttribute("Checked")
-    local wsOnly = wsOnlyBox:GetAttribute("Checked")
+    local searchRaw = richTextBox:GetAttribute("Checked")
     local showPath = showPathBox:GetAttribute("Checked")
 
-    local root = wsOnly and workspace or game
-
-    resultInfo.Text = "⏳ Mencari..."
-    resultInfo.TextColor3 = Color3.fromRGB(180, 200, 255)
-
-    local t0 = tick()
-    local count = 0
-    local ok, err = pcall(function()
-        count = searchText(root, keyword, caseSensitive, showPath)
-    end)
-    local dt = tick() - t0
-
-    if not ok then
-        resultInfo.Text = "❌ Error: " .. tostring(err)
-        resultInfo.TextColor3 = Color3.fromRGB(255, 130, 130)
+    local roots = getRoots()
+    if #roots == 0 then
+        resultInfo.Text = "⚠️ Pilih minimal 1 scope."
+        resultInfo.TextColor3 = Color3.fromRGB(255, 180, 100)
         return
     end
 
+    resultInfo.Text = "⏳ Scanning " .. #roots .. " root(s)..."
+    resultInfo.TextColor3 = Color3.fromRGB(180, 200, 255)
+
+    local t0 = tick()
+    local totalFound = 0
+    local errors = {}
+
+    for _, root in ipairs(roots) do
+        local found, err = searchInRoot(root, keyword, caseSensitive, searchRaw)
+        totalFound = totalFound + found
+        if err then table.insert(errors, tostring(err)) end
+    end
+
+    local dt = tick() - t0
+
     renderResults(showPath)
 
-    if count == 0 then
+    if totalFound == 0 then
         resultInfo.Text = string.format("🔍 '%s' → gak ada hasil (%.2fs)", keyword, dt)
         resultInfo.TextColor3 = Color3.fromRGB(255, 180, 100)
     else
-        resultInfo.Text = string.format("✅ '%s' → %d hasil (%.2fs)", keyword, count, dt)
+        resultInfo.Text = string.format("✅ '%s' → %d hasil (%.2fs)", keyword, totalFound, dt)
         resultInfo.TextColor3 = Color3.fromRGB(150, 255, 150)
+    end
+
+    if #errors > 0 then
+        resultInfo.Text = resultInfo.Text .. "\n⚠️ Errors: " .. table.concat(errors, ", ")
     end
 end
 
@@ -501,7 +580,7 @@ keywordBox.FocusLost:Connect(function(enterPressed)
     if enterPressed then doSearch() end
 end)
 
--- Copy All (Path + Text)
+-- Copy buttons
 copyAllBtn.MouseButton1Click:Connect(function()
     if #results == 0 then
         resultInfo.Text = "⚠️ Belum ada hasil."
@@ -515,24 +594,21 @@ copyAllBtn.MouseButton1Click:Connect(function()
     table.insert(lines, "")
 
     for i, r in ipairs(results) do
-        table.insert(lines, string.format("[%d] %s", i, r.className))
+        table.insert(lines, string.format("[%d] %s (%s)", i, r.className, r.parentGuiType))
         table.insert(lines, "Text: " .. r.plain)
         table.insert(lines, "Path: " .. r.path)
         table.insert(lines, "")
     end
 
-    local text = table.concat(lines, "\n")
-    local ok = copyToClipboard(text)
-
-    if ok then
-        resultInfo.Text = "✅ Copied " .. #results .. " results (Path + Text)"
-        resultInfo.TextColor3 = Color3.fromRGB(150, 255, 150)
-    else
-        resultInfo.Text = "⚠️ setclipboard gak ada, cek console (F9)"
-    end
+    local ok = copyToClipboard(table.concat(lines, "\n"))
+    resultInfo.Text = ok
+        and ("✅ Copied " .. #results .. " results")
+        or "⚠️ setclipboard gak ada, cek console (F9)"
+    resultInfo.TextColor3 = ok
+        and Color3.fromRGB(150, 255, 150)
+        or Color3.fromRGB(255, 180, 100)
 end)
 
--- Copy All Paths only
 copyAllPathsBtn.MouseButton1Click:Connect(function()
     if #results == 0 then
         resultInfo.Text = "⚠️ Belum ada hasil."
@@ -544,18 +620,15 @@ copyAllPathsBtn.MouseButton1Click:Connect(function()
         table.insert(lines, r.path)
     end
 
-    local text = table.concat(lines, "\n")
-    local ok = copyToClipboard(text)
-
-    if ok then
-        resultInfo.Text = "✅ Copied " .. #results .. " paths"
-        resultInfo.TextColor3 = Color3.fromRGB(150, 255, 150)
-    else
-        resultInfo.Text = "⚠️ setclipboard gak ada, cek console (F9)"
-    end
+    local ok = copyToClipboard(table.concat(lines, "\n"))
+    resultInfo.Text = ok
+        and ("✅ Copied " .. #results .. " paths")
+        or "⚠️ setclipboard gak ada, cek console (F9)"
+    resultInfo.TextColor3 = ok
+        and Color3.fromRGB(150, 255, 150)
+        or Color3.fromRGB(255, 180, 100)
 end)
 
--- Copy All Texts only
 copyAllTextsBtn.MouseButton1Click:Connect(function()
     if #results == 0 then
         resultInfo.Text = "⚠️ Belum ada hasil."
@@ -567,15 +640,13 @@ copyAllTextsBtn.MouseButton1Click:Connect(function()
         table.insert(lines, r.plain)
     end
 
-    local text = table.concat(lines, "\n")
-    local ok = copyToClipboard(text)
-
-    if ok then
-        resultInfo.Text = "✅ Copied " .. #results .. " texts"
-        resultInfo.TextColor3 = Color3.fromRGB(150, 255, 150)
-    else
-        resultInfo.Text = "⚠️ setclipboard gak ada, cek console (F9)"
-    end
+    local ok = copyToClipboard(table.concat(lines, "\n"))
+    resultInfo.Text = ok
+        and ("✅ Copied " .. #results .. " texts")
+        or "⚠️ setclipboard gak ada, cek console (F9)"
+    resultInfo.TextColor3 = ok
+        and Color3.fromRGB(150, 255, 150)
+        or Color3.fromRGB(255, 180, 100)
 end)
 
 clearBtn.MouseButton1Click:Connect(function()
@@ -585,4 +656,4 @@ clearBtn.MouseButton1Click:Connect(function()
 end)
 
 -- Init
-resultInfo.Text = "Masukkan keyword, lalu klik Cari."
+resultInfo.Text = "Masukkan keyword, lalu klik Cari.\nScope: Workspace + GUI (default)"
