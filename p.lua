@@ -1,5 +1,5 @@
 -- ============================================
--- AUTO HARVEST v2
+-- AUTO HARVEST v2.1 (FIXED)
 -- - Scan realtime semua plant & fruit
 -- - Tampil berat per buah (kg)
 -- - Panen manual (klik buah)
@@ -7,59 +7,106 @@
 -- - Filter berat (min/max)
 -- ============================================
 
-local CoreGui = game:GetService("CoreGui")
+local CoreGui         = game:GetService("CoreGui")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
+local Players         = game:GetService("Players")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- Guard: buffer (Luau native, tapi beberapa executor lawas mungkin nggak ada)
+local buffer = buffer or (typeof and typeof(buffer) == "table" and buffer) or nil
 
 local Packet = ReplicatedStorage:WaitForChild("SharedModules")
     :WaitForChild("Packet"):WaitForChild("RemoteEvent")
 
-local LocalPlayer = Players.LocalPlayer
 local ROOT = workspace:WaitForChild("Gardens")
 
 -- ============ CONFIG ============
 
 local CONFIG = {
-    MIN_WEIGHT = 0,       -- kg minimum untuk dipanen
-    MAX_WEIGHT = 999999,  -- kg maximum (di atas ini skip)
-    AUTO_DELAY = 0.3,     -- delay antar auto-panen (detik)
-    AUTO_ENABLED = false, -- toggle auto-panen
-    ONLY_MY_PLOTS = true, -- cuma panen plot sendiri
-    LOG_LIMIT = 100,      -- max log entries
+    MIN_WEIGHT   = 0,
+    MAX_WEIGHT   = 999999,
+    AUTO_DELAY   = 0.3,
+    AUTO_ENABLED = false,
+    ONLY_MY_PLOTS = true,
+    LOG_LIMIT    = 80,
 }
 
 -- ============ UTIL ============
 
-local function getFruitWeight(fruit)
-    local part = fruit:FindFirstChild("HarvestPart", true)
-    if not part then return nil end
-    local lbl = part:FindFirstChild("HarvestPromptLabel", true)
-    if not lbl then return nil end
+local function stripTags(s)
+    return (s:gsub("<[^>]+>", ""))
+end
 
-    for _, desc in ipairs(lbl:GetDescendants()) do
-        if desc:IsA("TextLabel") then
-            local plain = desc.Text:gsub("<[^>]+>", "")
-            local w = plain:match("([%d%.]+)%s*kg")
-            if w then return tonumber(w) end
+local function extractWeightFromText(text)
+    if not text then return nil end
+    local plain = stripTags(text)
+    local w = plain:match("([%d%.]+)%s*[kK][gG]")
+    return w and tonumber(w) or nil
+end
+
+local function extractNameFromText(text)
+    if not text then return nil end
+    local plain = stripTags(text)
+    -- Ambil teks sebelum simbol ⚖ atau sebelum angka kg
+    local name = plain:match("^%s*([^⚖%d]+)")
+    if name then
+        name = name:gsub("%s+$", "")
+        if #name > 0 then return name end
+    end
+    return nil
+end
+
+-- Cari TextLabel di dalam sebuah Instance (rekursif)
+local function findTextLabels(root)
+    local out = {}
+    for _, d in ipairs(root:GetDescendants()) do
+        if d:IsA("TextLabel") or d:IsA("TextButton") then
+            table.insert(out, d)
         end
     end
+    return out
+end
+
+local function getFruitWeight(fruit)
+    -- Prioritas: HarvestPart > HarvestPromptLabel
+    local part = fruit:FindFirstChild("HarvestPart", true)
+    local scope = part or fruit
+
+    local lbl = scope:FindFirstChild("HarvestPromptLabel", true)
+    if lbl then
+        for _, d in ipairs(findTextLabels(lbl)) do
+            local w = extractWeightFromText(d.Text)
+            if w then return w end
+        end
+    end
+
+    -- Fallback: scan semua descendant fruit
+    for _, d in ipairs(findTextLabels(fruit)) do
+        local w = extractWeightFromText(d.Text)
+        if w then return w end
+    end
+
     return nil
 end
 
 local function getFruitName(fruit)
     local part = fruit:FindFirstChild("HarvestPart", true)
-    if not part then return nil end
-    local lbl = part:FindFirstChild("HarvestPromptLabel", true)
-    if not lbl then return nil end
+    local scope = part or fruit
 
-    for _, desc in ipairs(lbl:GetDescendants()) do
-        if desc:IsA("TextLabel") then
-            local plain = desc.Text:gsub("<[^>]+>", "")
-            local name = plain:match("^%s*([^⚖]+)")
-            if name then return name:gsub("%s+$", "") end
+    local lbl = scope:FindFirstChild("HarvestPromptLabel", true)
+    if lbl then
+        for _, d in ipairs(findTextLabels(lbl)) do
+            local n = extractNameFromText(d.Text)
+            if n then return n end
         end
     end
+
+    for _, d in ipairs(findTextLabels(fruit)) do
+        local n = extractNameFromText(d.Text)
+        if n and not n:match("^%s*$") then return n end
+    end
+
     return nil
 end
 
@@ -77,22 +124,26 @@ local function getOwnerId(plant)
 end
 
 local function harvest(plant, fruit)
+    if not buffer then
+        return false, "buffer not supported"
+    end
     local uuid = getPlantUuid(plant)
-    local idx = getFruitIndex(fruit)
+    local idx  = getFruitIndex(fruit)
     if not uuid or not idx then return false, "Format invalid" end
 
-    local payload = ")\001$" .. uuid .. "\001" .. idx
-    Packet:FireServer(buffer.fromstring(payload))
+    local ok, err = pcall(function()
+        local payload = ")\001$" .. uuid .. "\001" .. idx
+        Packet:FireServer(buffer.fromstring(payload))
+    end)
+    if not ok then return false, tostring(err) end
     return true
 end
 
 -- ============ STATE ============
 
 local state = {
-    fruits = {},          -- [fruit] = {weight, name, plant, index, addedAt}
-    log = {},
+    fruits = {},  -- [fruitInstance] = {weight, name, plant, index, userId}
     autoRunning = false,
-    autoCooldown = 0,
 }
 
 -- ============ GUI ============
@@ -107,7 +158,7 @@ gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = CoreGui
 
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0, 380, 0, 540)
+main.Size = UDim2.new(0, 380, 0, 560)
 main.Position = UDim2.new(0, 20, 0, 60)
 main.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
 main.BorderSizePixel = 0
@@ -124,7 +175,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, 0, 0, 32)
 title.BackgroundColor3 = Color3.fromRGB(40, 40, 52)
 title.BorderSizePixel = 0
-title.Text = "  🌾 Auto Harvest v2"
+title.Text = "  🌾 Auto Harvest v2.1"
 title.TextColor3 = Color3.fromRGB(230, 230, 240)
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Font = Enum.Font.GothamBold
@@ -170,7 +221,6 @@ filterTitle.TextSize = 11
 filterTitle.TextXAlignment = Enum.TextXAlignment.Left
 filterTitle.Parent = filterFrame
 
--- Min weight input
 local function makeInput(parent, xPos, labelText, defaultVal)
     local container = Instance.new("Frame")
     container.Size = UDim2.new(0, 160, 0, 36)
@@ -207,7 +257,7 @@ local function makeInput(parent, xPos, labelText, defaultVal)
     return box
 end
 
-local minBox = makeInput(filterFrame, 8, "Min", CONFIG.MIN_WEIGHT)
+local minBox = makeInput(filterFrame, 8,   "Min", CONFIG.MIN_WEIGHT)
 local maxBox = makeInput(filterFrame, 180, "Max", CONFIG.MAX_WEIGHT)
 
 minBox.FocusLost:Connect(function()
@@ -222,7 +272,7 @@ end)
 -- ============ AUTO TOGGLE ============
 
 local autoBtn = Instance.new("TextButton")
-autoBtn.Size = UDim2.new(1, -16, 0, 36)
+autoBtn.Size = UDim2.new(0.55, -8, 0, 36)
 autoBtn.Position = UDim2.new(0, 8, 0, 120)
 autoBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
 autoBtn.Text = "🤖 AUTO: OFF"
@@ -246,7 +296,22 @@ autoBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- ============ FILTER INFO ============
+-- Tombol Panen Semua
+local harvestAllBtn = Instance.new("TextButton")
+harvestAllBtn.Size = UDim2.new(0.45, -8, 0, 36)
+harvestAllBtn.Position = UDim2.new(0.55, 0, 0, 120)
+harvestAllBtn.BackgroundColor3 = Color3.fromRGB(90, 60, 130)
+harvestAllBtn.Text = "🌾 Panen Semua"
+harvestAllBtn.TextColor3 = Color3.fromRGB(240, 230, 255)
+harvestAllBtn.Font = Enum.Font.GothamBold
+harvestAllBtn.TextSize = 12
+harvestAllBtn.Parent = main
+
+local haCorner = Instance.new("UICorner")
+haCorner.CornerRadius = UDim.new(0, 6)
+haCorner.Parent = harvestAllBtn
+
+-- ============ INFO LABEL ============
 
 local filterInfo = Instance.new("TextLabel")
 filterInfo.Size = UDim2.new(1, -16, 0, 18)
@@ -313,7 +378,7 @@ logLabel.TextXAlignment = Enum.TextXAlignment.Left
 logLabel.Parent = main
 
 local logFrame = Instance.new("ScrollingFrame")
-logFrame.Size = UDim2.new(1, -16, 0, 40)
+logFrame.Size = UDim2.new(1, -16, 0, 60)
 logFrame.Position = UDim2.new(0, 8, 0, 502)
 logFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
 logFrame.BorderSizePixel = 0
@@ -353,15 +418,15 @@ local function addLog(msg, color)
     lbl.LayoutOrder = logCounter
     lbl.Parent = logFrame
 
-    -- Batasi log
-    local kids = logFrame:GetChildren()
-    local count = 0
-    for _, k in ipairs(kids) do if k:IsA("TextLabel") then count = count + 1 end end
-    if count > CONFIG.LOG_LIMIT then
-        for _, k in ipairs(kids) do
-            if k:IsA("TextLabel") and k.LayoutOrder <= logCounter - CONFIG.LOG_LIMIT then
-                k:Destroy()
-            end
+    -- Batasi log: hapus yang paling lama kalau > LIMIT
+    local labels = {}
+    for _, k in ipairs(logFrame:GetChildren()) do
+        if k:IsA("TextLabel") then table.insert(labels, k) end
+    end
+    if #labels > CONFIG.LOG_LIMIT then
+        table.sort(labels, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
+        for i = 1, (#labels - CONFIG.LOG_LIMIT) do
+            labels[i]:Destroy()
         end
     end
 end
@@ -371,23 +436,21 @@ end
 local listRowCounter = 0
 
 local function renderFruitList()
-    -- Hapus row lama
+    -- Cleanup hanya TextButton (row), biar UIListLayout & UIPadding aman
     for _, c in ipairs(listFrame:GetChildren()) do
-        if c:IsA("TextButton") or c:IsA("Frame") then c:Destroy() end
+        if c:IsA("TextButton") then c:Destroy() end
     end
     listRowCounter = 0
 
-    -- Kumpulin & sort by weight desc
     local entries = {}
     for fruit, data in pairs(state.fruits) do
         if fruit.Parent then
             table.insert(entries, {
-                fruit = fruit,
+                fruit  = fruit,
                 weight = data.weight,
-                name = data.name,
-                plant = data.plant,
-                index = data.index,
-                userId = data.userId,
+                name   = data.name,
+                plant  = data.plant,
+                index  = data.index,
             })
         end
     end
@@ -420,7 +483,6 @@ local function renderFruitList()
         rc.CornerRadius = UDim.new(0, 4)
         rc.Parent = row
 
-        -- Nama buah (kiri)
         local nameLbl = Instance.new("TextLabel")
         nameLbl.Size = UDim2.new(0.65, 0, 1, 0)
         nameLbl.Position = UDim2.new(0, 6, 0, 0)
@@ -435,7 +497,6 @@ local function renderFruitList()
         nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
         nameLbl.Parent = row
 
-        -- Berat (kanan)
         local weightLbl = Instance.new("TextLabel")
         weightLbl.Size = UDim2.new(0.3, 0, 1, 0)
         weightLbl.Position = UDim2.new(0.68, 0, 0, 0)
@@ -449,10 +510,11 @@ local function renderFruitList()
         weightLbl.TextXAlignment = Enum.TextXAlignment.Right
         weightLbl.Parent = row
 
-        -- Klik = panen manual
         row.MouseButton1Click:Connect(function()
             if not e.fruit.Parent then
                 addLog("Buah udah gak ada", Color3.fromRGB(255, 150, 150))
+                state.fruits[e.fruit] = nil
+                renderFruitList()
                 return
             end
             local ok = harvest(e.plant, e.fruit)
@@ -472,10 +534,9 @@ local function renderFruitList()
     filterInfo.Text = "Buah siap panen: " .. readyCount .. " / " .. #entries
 end
 
--- ============ SCAN WORKSPACE ============
+-- ============ SCAN ============
 
 local function scanPlant(plant)
-    -- Cek ownership
     local ownerId = getOwnerId(plant)
     if CONFIG.ONLY_MY_PLOTS and ownerId ~= LocalPlayer.UserId then
         return
@@ -485,39 +546,42 @@ local function scanPlant(plant)
     if not fruits then return end
 
     for _, fruit in ipairs(fruits:GetChildren()) do
-        if not state.fruits[fruit] then
-            local idx = getFruitIndex(fruit)
-            if idx then
+        local idx = getFruitIndex(fruit)
+        if idx then
+            local existing = state.fruits[fruit]
+            if not existing then
                 local weight = getFruitWeight(fruit)
-                local name = getFruitName(fruit)
+                local name   = getFruitName(fruit)
                 state.fruits[fruit] = {
                     weight = weight,
-                    name = name,
-                    plant = plant,
-                    index = idx,
+                    name   = name,
+                    plant  = plant,
+                    index  = idx,
                     userId = ownerId,
                 }
                 addLog("🆕 " .. (name or "?") .. " #" .. idx ..
                     " (" .. (weight and string.format("%.2f", weight) or "?") .. "kg)",
                     Color3.fromRGB(180, 220, 255))
+            else
+                -- Update berat kalau berubah
+                local w = getFruitWeight(fruit)
+                if w and w ~= existing.weight then
+                    existing.weight = w
+                end
+                -- Update plant reference (jaga-jaga plant di-reparent)
+                existing.plant = plant
             end
-        else
-            -- Update berat (kalau berubah)
-            local w = getFruitWeight(fruit)
-            if w then state.fruits[fruit].weight = w end
         end
     end
 end
 
 local function fullScan()
-    local before = 0
-    for _ in pairs(state.fruits) do before = before + 1 end
-
     for _, plot in ipairs(ROOT:GetChildren()) do
         local plants = plot:FindFirstChild("Plants")
-        if not plants then continue end
-        for _, plant in ipairs(plants:GetChildren()) do
-            scanPlant(plant)
+        if plants then
+            for _, plant in ipairs(plants:GetChildren()) do
+                scanPlant(plant)
+            end
         end
     end
 
@@ -527,14 +591,26 @@ local function fullScan()
             state.fruits[fruit] = nil
         end
     end
-
-    local after = 0
-    for _ in pairs(state.fruits) do after = after + 1 end
-
-    if before ~= after then
-        renderFruitList()
-    end
 end
+
+-- ============ PANEN SEMUA ============
+
+harvestAllBtn.MouseButton1Click:Connect(function()
+    local count = 0
+    for fruit, data in pairs(state.fruits) do
+        if fruit.Parent and data.weight
+            and data.weight >= CONFIG.MIN_WEIGHT
+            and data.weight <= CONFIG.MAX_WEIGHT then
+            local ok = harvest(data.plant, fruit)
+            if ok then count = count + 1 end
+            task.wait(0.05)
+        end
+    end
+    addLog("🌾 Panen semua: " .. count .. " buah", Color3.fromRGB(200, 180, 255))
+    task.wait(0.3)
+    fullScan()
+    renderFruitList()
+end)
 
 -- ============ AUTO HARVEST LOOP ============
 
@@ -543,14 +619,13 @@ task.spawn(function()
         task.wait(CONFIG.AUTO_DELAY)
 
         if CONFIG.AUTO_ENABLED then
-            -- Cari buah yang masuk filter
             local best = nil
             for fruit, data in pairs(state.fruits) do
                 if fruit.Parent and data.weight
                     and data.weight >= CONFIG.MIN_WEIGHT
                     and data.weight <= CONFIG.MAX_WEIGHT then
                     if not best or data.weight > best.weight then
-                        best = { fruit = fruit, data = data }
+                        best = { fruit = fruit, data = data, weight = data.weight }
                     end
                 end
             end
@@ -572,23 +647,32 @@ end)
 
 -- ============ REALTIME SCAN ============
 
--- Scan tiap 1 detik
+-- Scan tiap 1 detik (render hanya kalau perlu)
 task.spawn(function()
+    local lastCount = -1
     while gui.Parent do
         fullScan()
+        local now = 0
+        for _ in pairs(state.fruits) do now = now + 1 end
+        if now ~= lastCount then
+            renderFruitList()
+            lastCount = now
+        end
         task.wait(1)
     end
 end)
 
--- Listen child added/removed
+-- Hook container (ChildAdded/Removed)
 local function hookContainer(container)
     container.ChildAdded:Connect(function()
         task.wait(0.2)
         fullScan()
+        renderFruitList()
     end)
     container.ChildRemoved:Connect(function()
         task.wait(0.1)
         fullScan()
+        renderFruitList()
     end)
 end
 
@@ -601,11 +685,6 @@ ROOT.ChildAdded:Connect(function(plot)
     task.wait(0.5)
     local plants = plot:FindFirstChild("Plants")
     if plants then hookContainer(plants) end
-end)
-
--- Cleanup saat GUI dihapus
-gui.Destroying:Connect(function()
-    -- stop loops (mereka cek gui.Parent)
 end)
 
 -- ============ INIT ============
