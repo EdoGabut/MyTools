@@ -49,7 +49,7 @@ local CONFIG = {
     -- ===== Cycle =====
     NIGHT_START = 18,
     NIGHT_END   = 6,
-    PACKET_STRING   = "\195\000^\016Common Seed Pack",
+    PACKET_STRING   = "\195\0009\nBriar Rose",
 
     TARGET_PATH     = { "WitchCauldron", "WitchCauldron", "WitchCauldron", "Part4" },
     WATER_FOLDER_PATH = { "WitchCauldron", "WitchCauldron", "WitchCauldron", "Water" },
