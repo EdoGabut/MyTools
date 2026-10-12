@@ -37,12 +37,14 @@ local ITEMS = {
 	-- WATERING CANS
 	{ display = "Cider Watering Can",       name = "Cider Watering Can",       lookup = "Cider Watering Can",       category = "WateringCans" },
 	{ display = "Super Cider Watering Can", name = "Super Cider Watering Can", lookup = "Super Cider Watering Can", category = "WateringCans" },
+	{ display = "Trowel", name = "Trowel", lookup = "Trowel", category = "Trowels" },
 }
 
 local CATEGORIES = {
 	{ name = "Seeds",        label = "🌱" },
 	{ name = "Sprinklers",   label = "💧" },
 	{ name = "WateringCans", label = "🚿" },
+	{ name = "Trowels", label = "T" },
 }
 
 local USERNAME_PRESETS = { "krinjguy67", "andri21649", "notexd777" }
