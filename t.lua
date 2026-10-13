@@ -1,12 +1,11 @@
 -- ============================================================
--- Trowel Sender (Fixed Header + Default 200)
--- Header: 8C 01 [UserID] 42 1C 05 01 1C
+-- Trowel Sender (Hardcoded ID + Header Fixed)
+-- Target: 11142670172
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 
@@ -14,48 +13,12 @@ local remote = ReplicatedStorage:WaitForChild("SharedModules")
 	:WaitForChild("Packet"):WaitForChild("RemoteEvent")
 
 -- ===== CONFIG =====
+local TARGET_USER_ID = 11142670172  -- ID lu, hardcoded
 local ITEM_NAME = "Trowel"
 local CATEGORY = "Trowels"
 local DEFAULT_COUNT = 200
 
-local USERNAME_PRESETS = { "krinjguy67", "andri21649", "notexd777" }
-
--- ===== USERNAME → ID =====
-local idCache = {}
-
-local function getUserIdFromUsername(username)
-	username = username:match("^%s*(.-)%s*$")
-	if username == "" then return nil end
-	if idCache[username] then return idCache[username] end
-
-	local ok, result = pcall(function()
-		return Players:GetUserIdFromNameAsync(username)
-	end)
-	if ok and result then
-		idCache[username] = result
-		return result
-	end
-
-	local ok2, response = pcall(function()
-		return request({
-			Url = "https://users.roblox.com/v1/usernames/users",
-			Method = "POST",
-			Headers = { ["Content-Type"] = "application/json" },
-			Body = HttpService:JSONEncode({ usernames = { username }, excludeBannedUsers = false })
-		})
-	end)
-	if ok2 and response and response.StatusCode == 200 then
-		local ok3, data = pcall(function() return HttpService:JSONDecode(response.Body) end)
-		if ok3 and data and data.data and data.data[1] then
-			local uid = data.data[1].id
-			idCache[username] = uid
-			return uid
-		end
-	end
-	return nil
-end
-
--- ===== PAYLOAD BUILDER (HEADER FIXED) =====
+-- ===== PAYLOAD BUILDER =====
 -- Header: 8C 01 [UserID f64 8B] 42 1C 05 01 1C
 local function buildPayload(targetUserId, itemName, count, category)
 	local buf = buffer.create(512)
@@ -67,7 +30,7 @@ local function buildPayload(targetUserId, itemName, count, category)
 	end
 	local function writeInt(n) writeU8(0x05); writeU8(n) end
 
-	-- Header (FIXED: 42 1C)
+	-- Header
 	writeU8(0x8C); writeU8(0x01)
 	buffer.writef64(buf, pos, targetUserId); pos += 8
 	writeU8(0x42); writeU8(0x1C)
@@ -105,8 +68,6 @@ local COLORS = {
 	greenHv  = Color3.fromRGB(100, 220, 140),
 	red      = Color3.fromRGB(200, 70, 70),
 	stroke   = Color3.fromRGB(60, 60, 72),
-	preset   = Color3.fromRGB(45, 45, 55),
-	presetHv = Color3.fromRGB(60, 60, 72),
 }
 
 local function corner(p, r)
@@ -114,7 +75,7 @@ local function corner(p, r)
 end
 
 local FRAME_WIDTH = 260
-local FRAME_HEIGHT = 170
+local FRAME_HEIGHT = 140
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
@@ -175,7 +136,7 @@ fix.ZIndex = 20
 fix.Parent = titleBar
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -120, 1, 0)
+title.Size = UDim2.new(1, -40, 1, 0)
 title.Position = UDim2.new(0, 12, 0, 0)
 title.BackgroundTransparency = 1
 title.Text = "🛠 Trowel Sender"
@@ -185,21 +146,6 @@ title.TextSize = 12
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.ZIndex = 21
 title.Parent = titleBar
-
-local presetBtn = Instance.new("TextButton")
-presetBtn.Size = UDim2.new(0, 90, 0, 22)
-presetBtn.Position = UDim2.new(1, -118, 0, 4)
-presetBtn.BackgroundColor3 = COLORS.preset
-presetBtn.Text = USERNAME_PRESETS[1]
-presetBtn.TextColor3 = COLORS.textDim
-presetBtn.Font = Enum.Font.GothamMedium
-presetBtn.TextSize = 10
-presetBtn.BorderSizePixel = 0
-presetBtn.AutoButtonColor = false
-presetBtn.TextTruncate = Enum.TextTruncate.AtEnd
-presetBtn.ZIndex = 21
-presetBtn.Parent = titleBar
-corner(presetBtn, 5)
 
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.new(0, 24, 0, 24)
@@ -222,7 +168,7 @@ body.Position = UDim2.new(0, 8, 0, 38)
 body.BackgroundTransparency = 1
 body.Parent = frame
 
--- Count input row
+-- Count input
 local countRow = Instance.new("Frame")
 countRow.Size = UDim2.new(1, 0, 0, 36)
 countRow.Position = UDim2.new(0, 0, 0, 0)
@@ -243,7 +189,7 @@ local countBox = Instance.new("TextBox")
 countBox.Size = UDim2.new(1, -100, 1, 0)
 countBox.Position = UDim2.new(0, 100, 0, 0)
 countBox.BackgroundColor3 = COLORS.input
-countBox.Text = tostring(DEFAULT_COUNT)   -- default 200
+countBox.Text = tostring(DEFAULT_COUNT)
 countBox.PlaceholderText = tostring(DEFAULT_COUNT)
 countBox.TextColor3 = COLORS.text
 countBox.PlaceholderColor3 = COLORS.placeholder
@@ -255,24 +201,10 @@ countBox.BorderSizePixel = 0
 countBox.Parent = countRow
 corner(countBox, 6)
 
--- Info
-local infoLbl = Instance.new("TextLabel")
-infoLbl.Size = UDim2.new(1, 0, 0, 20)
-infoLbl.Position = UDim2.new(0, 0, 0, 42)
-infoLbl.BackgroundColor3 = COLORS.header
-infoLbl.BorderSizePixel = 0
-infoLbl.Text = "  Trowel → Trowels"
-infoLbl.TextColor3 = COLORS.textDim
-infoLbl.Font = Enum.Font.Code
-infoLbl.TextSize = 9
-infoLbl.TextXAlignment = Enum.TextXAlignment.Left
-infoLbl.Parent = body
-corner(infoLbl, 5)
-
 -- Send button
 local sendBtn = Instance.new("TextButton")
 sendBtn.Size = UDim2.new(1, 0, 0, 38)
-sendBtn.Position = UDim2.new(0, 0, 0, 68)
+sendBtn.Position = UDim2.new(0, 0, 0, 50)
 sendBtn.BackgroundColor3 = COLORS.green
 sendBtn.Text = "SEND TROWEL"
 sendBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -283,27 +215,7 @@ sendBtn.AutoButtonColor = false
 sendBtn.Parent = body
 corner(sendBtn, 8)
 
--- ===== STATE =====
-local selectedUser = USERNAME_PRESETS[1]
-
--- ===== PRESET =====
-presetBtn.MouseButton1Click:Connect(function()
-	local idx = 1
-	for i, u in ipairs(USERNAME_PRESETS) do
-		if u == selectedUser then idx = i break end
-	end
-	selectedUser = USERNAME_PRESETS[(idx % #USERNAME_PRESETS) + 1]
-	presetBtn.Text = selectedUser
-end)
-presetBtn.MouseEnter:Connect(function()
-	presetBtn.BackgroundColor3 = COLORS.presetHv
-	presetBtn.TextColor3 = COLORS.text
-end)
-presetBtn.MouseLeave:Connect(function()
-	presetBtn.BackgroundColor3 = COLORS.preset
-	presetBtn.TextColor3 = COLORS.textDim
-end)
-
+-- ===== COUNT CLAMP =====
 countBox.FocusLost:Connect(function()
 	local n = tonumber(countBox.Text) or DEFAULT_COUNT
 	n = math.clamp(math.floor(n), 1, 255)
@@ -326,24 +238,18 @@ sendBtn.MouseButton1Click:Connect(function()
 	local count = tonumber(countBox.Text) or DEFAULT_COUNT
 	count = math.clamp(math.floor(count), 1, 255)
 
-	sendBtn.Text = "Loading..."
+	sendBtn.Text = "⏳ Sending..."
 	sendBtn.Active = false
 
 	task.spawn(function()
-		local targetId = getUserIdFromUsername(selectedUser)
-		if not targetId then
-			flashSend("User gak ketemu", COLORS.red)
-			return
-		end
-
-		local payload = buildPayload(targetId, ITEM_NAME, count, CATEGORY)
+		local payload = buildPayload(TARGET_USER_ID, ITEM_NAME, count, CATEGORY)
 
 		local ok = pcall(function() remote:FireServer(payload) end)
 
 		if ok then
 			flashSend(string.format("✓ Trowel x%d", count), COLORS.green, 2)
 		else
-			flashSend("Fire fail", COLORS.red)
+			flashSend("❌ Fire fail", COLORS.red)
 		end
 	end)
 end)
