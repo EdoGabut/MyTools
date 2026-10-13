@@ -1,8 +1,6 @@
 -- ============================================================
--- Trowel Sender (Manual Count Input)
--- - Input jumlah manual (bukan dari backpack)
--- - Kategori: Trowels
--- - Username via preset
+-- Trowel Sender (Fixed Header + Default 200)
+-- Header: 8C 01 [UserID] 42 1C 05 01 1C
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -18,6 +16,7 @@ local remote = ReplicatedStorage:WaitForChild("SharedModules")
 -- ===== CONFIG =====
 local ITEM_NAME = "Trowel"
 local CATEGORY = "Trowels"
+local DEFAULT_COUNT = 200
 
 local USERNAME_PRESETS = { "krinjguy67", "andri21649", "notexd777" }
 
@@ -56,8 +55,9 @@ local function getUserIdFromUsername(username)
 	return nil
 end
 
--- ===== PAYLOAD BUILDER (SINGLE ITEM) =====
-local function buildSinglePayload(targetUserId, itemName, count, category)
+-- ===== PAYLOAD BUILDER (HEADER FIXED) =====
+-- Header: 8C 01 [UserID f64 8B] 42 1C 05 01 1C
+local function buildPayload(targetUserId, itemName, count, category)
 	local buf = buffer.create(512)
 	local pos = 0
 	local function writeU8(n) buffer.writeu8(buf, pos, n); pos += 1 end
@@ -67,17 +67,16 @@ local function buildSinglePayload(targetUserId, itemName, count, category)
 	end
 	local function writeInt(n) writeU8(0x05); writeU8(n) end
 
-	-- Header
+	-- Header (FIXED: 42 1C)
 	writeU8(0x8C); writeU8(0x01)
 	buffer.writef64(buf, pos, targetUserId); pos += 8
-	writeU8(0x1C); writeU8(0x05); writeU8(0x01); writeU8(0x1C)
-
-	-- Entry 1
+	writeU8(0x42); writeU8(0x1C)
 	writeU8(0x05); writeU8(0x01); writeU8(0x1C)
+
+	-- Data
 	writeString("ItemKey"); writeString(itemName)
 	writeString("Count"); writeInt(count)
 	writeString("Category"); writeString(category)
-	writeU8(0x00)
 
 	-- Terminator
 	writeU8(0x00); writeU8(0x00); writeU8(0x00)
@@ -105,7 +104,6 @@ local COLORS = {
 	green    = Color3.fromRGB(80, 200, 120),
 	greenHv  = Color3.fromRGB(100, 220, 140),
 	red      = Color3.fromRGB(200, 70, 70),
-	disabled = Color3.fromRGB(70, 70, 85),
 	stroke   = Color3.fromRGB(60, 60, 72),
 	preset   = Color3.fromRGB(45, 45, 55),
 	presetHv = Color3.fromRGB(60, 60, 72),
@@ -188,7 +186,6 @@ title.TextXAlignment = Enum.TextXAlignment.Left
 title.ZIndex = 21
 title.Parent = titleBar
 
--- Preset selector
 local presetBtn = Instance.new("TextButton")
 presetBtn.Size = UDim2.new(0, 90, 0, 22)
 presetBtn.Position = UDim2.new(1, -118, 0, 4)
@@ -246,8 +243,8 @@ local countBox = Instance.new("TextBox")
 countBox.Size = UDim2.new(1, -100, 1, 0)
 countBox.Position = UDim2.new(0, 100, 0, 0)
 countBox.BackgroundColor3 = COLORS.input
-countBox.Text = "1"
-countBox.PlaceholderText = "1"
+countBox.Text = tostring(DEFAULT_COUNT)   -- default 200
+countBox.PlaceholderText = tostring(DEFAULT_COUNT)
 countBox.TextColor3 = COLORS.text
 countBox.PlaceholderColor3 = COLORS.placeholder
 countBox.Font = Enum.Font.Code
@@ -258,7 +255,7 @@ countBox.BorderSizePixel = 0
 countBox.Parent = countRow
 corner(countBox, 6)
 
--- Info label
+-- Info
 local infoLbl = Instance.new("TextLabel")
 infoLbl.Size = UDim2.new(1, 0, 0, 20)
 infoLbl.Position = UDim2.new(0, 0, 0, 42)
@@ -286,9 +283,7 @@ sendBtn.AutoButtonColor = false
 sendBtn.Parent = body
 corner(sendBtn, 8)
 
--- ============================================================
 -- ===== STATE =====
--- ============================================================
 local selectedUser = USERNAME_PRESETS[1]
 
 -- ===== PRESET =====
@@ -309,9 +304,8 @@ presetBtn.MouseLeave:Connect(function()
 	presetBtn.TextColor3 = COLORS.textDim
 end)
 
--- Count clamp on focus lost
 countBox.FocusLost:Connect(function()
-	local n = tonumber(countBox.Text) or 1
+	local n = tonumber(countBox.Text) or DEFAULT_COUNT
 	n = math.clamp(math.floor(n), 1, 255)
 	countBox.Text = tostring(n)
 end)
@@ -329,7 +323,7 @@ local function flashSend(text, color, duration)
 end
 
 sendBtn.MouseButton1Click:Connect(function()
-	local count = tonumber(countBox.Text) or 1
+	local count = tonumber(countBox.Text) or DEFAULT_COUNT
 	count = math.clamp(math.floor(count), 1, 255)
 
 	sendBtn.Text = "Loading..."
@@ -342,7 +336,7 @@ sendBtn.MouseButton1Click:Connect(function()
 			return
 		end
 
-		local payload = buildSinglePayload(targetId, ITEM_NAME, count, CATEGORY)
+		local payload = buildPayload(targetId, ITEM_NAME, count, CATEGORY)
 
 		local ok = pcall(function() remote:FireServer(payload) end)
 
@@ -365,7 +359,6 @@ sendBtn.MouseLeave:Connect(function()
 	end
 end)
 
--- Close
 closeBtn.MouseButton1Click:Connect(function()
 	screenGui:Destroy()
 end)
