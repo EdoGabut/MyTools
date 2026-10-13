@@ -1,6 +1,8 @@
 -- ============================================================
--- Trowel Sender (Single)
--- Khusus Trowel
+-- Trowel Sender (Manual Count Input)
+-- - Input jumlah manual (bukan dari backpack)
+-- - Kategori: Trowels
+-- - Username via preset
 -- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -18,9 +20,6 @@ local ITEM_NAME = "Trowel"
 local CATEGORY = "Trowels"
 
 local USERNAME_PRESETS = { "krinjguy67", "andri21649", "notexd777" }
-
-local HOTBAR_PATH   = { "BackpackGui", "Backpack", "Hotbar" }
-local BACKPACK_PATH = { "BackpackGui", "Backpack", "Inventory", "ScrollingFrame", "UIGridFrame" }
 
 -- ===== USERNAME → ID =====
 local idCache = {}
@@ -58,7 +57,6 @@ local function getUserIdFromUsername(username)
 end
 
 -- ===== PAYLOAD BUILDER (SINGLE ITEM) =====
--- Header: 8C 01 [UserID f64] 1C 05 01 1C 05 01 1C ... 00 00 00
 local function buildSinglePayload(targetUserId, itemName, count, category)
 	local buf = buffer.create(512)
 	local pos = 0
@@ -89,62 +87,6 @@ local function buildSinglePayload(targetUserId, itemName, count, category)
 	return final
 end
 
--- ===== SCANNER =====
-local function resolveFromPlayerGui(parts)
-	local node = player:FindFirstChild("PlayerGui")
-	if not node then return nil end
-	for _, name in ipairs(parts) do
-		node = node:FindFirstChild(name)
-		if not node then return nil end
-	end
-	return node
-end
-
-local function parseCount(text)
-	if not text or text == "" then return 0 end
-	return tonumber(text:match("%d+")) or 0
-end
-
-local function scanContainer(container)
-	local map = {}
-	if not container then return map end
-	for _, slot in ipairs(container:GetChildren()) do
-		if slot:IsA("Frame") or slot:IsA("TextButton") or slot:IsA("ImageButton") then
-			local tn = slot:FindFirstChild("ToolName", true)
-			local tc = slot:FindFirstChild("ToolCount", true)
-			if tn and tn:IsA("TextLabel") and tn.Text ~= "" then
-				local count = 1
-				if tc and tc:IsA("TextLabel") then
-					count = parseCount(tc.Text)
-					if count == 0 then count = 1 end
-				end
-				map[tn.Text] = (map[tn.Text] or 0) + count
-			end
-		end
-	end
-	return map
-end
-
-local function scanAll()
-	local combined = {}
-	for _, path in ipairs({ HOTBAR_PATH, BACKPACK_PATH }) do
-		local map = scanContainer(resolveFromPlayerGui(path))
-		for name, count in pairs(map) do
-			combined[name] = (combined[name] or 0) + count
-		end
-	end
-	return combined
-end
-
-local function lookupCount(map, itemName)
-	if map[itemName] then return map[itemName] end
-	local target = itemName:lower():match("^%s*(.-)%s*$")
-	for name, count in pairs(map) do
-		if name:lower():match("^%s*(.-)%s*$") == target then return count end
-	end
-	return 0
-end
-
 -- ============================================================
 -- ===== BUILD GUI =====
 -- ============================================================
@@ -156,8 +98,10 @@ screenGui.Parent = player:WaitForChild("PlayerGui")
 local COLORS = {
 	bg       = Color3.fromRGB(22, 22, 28),
 	header   = Color3.fromRGB(16, 16, 20),
+	input    = Color3.fromRGB(15, 15, 20),
 	text     = Color3.fromRGB(235, 235, 240),
 	textDim  = Color3.fromRGB(140, 140, 155),
+	placeholder = Color3.fromRGB(110, 110, 125),
 	green    = Color3.fromRGB(80, 200, 120),
 	greenHv  = Color3.fromRGB(100, 220, 140),
 	red      = Color3.fromRGB(200, 70, 70),
@@ -165,16 +109,14 @@ local COLORS = {
 	stroke   = Color3.fromRGB(60, 60, 72),
 	preset   = Color3.fromRGB(45, 45, 55),
 	presetHv = Color3.fromRGB(60, 60, 72),
-	accent   = Color3.fromRGB(120, 60, 200),
-	accentHv = Color3.fromRGB(140, 80, 220),
 }
 
 local function corner(p, r)
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = p
 end
 
-local FRAME_WIDTH = 240
-local FRAME_HEIGHT = 140
+local FRAME_WIDTH = 260
+local FRAME_HEIGHT = 170
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
@@ -235,7 +177,7 @@ fix.ZIndex = 20
 fix.Parent = titleBar
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -100, 1, 0)
+title.Size = UDim2.new(1, -120, 1, 0)
 title.Position = UDim2.new(0, 12, 0, 0)
 title.BackgroundTransparency = 1
 title.Text = "🛠 Trowel Sender"
@@ -283,26 +225,57 @@ body.Position = UDim2.new(0, 8, 0, 38)
 body.BackgroundTransparency = 1
 body.Parent = frame
 
--- Status label
-local statusLbl = Instance.new("TextLabel")
-statusLbl.Size = UDim2.new(1, 0, 0, 32)
-statusLbl.Position = UDim2.new(0, 0, 0, 0)
-statusLbl.BackgroundColor3 = COLORS.header
-statusLbl.BorderSizePixel = 0
-statusLbl.Text = "Trowel: x0"
-statusLbl.TextColor3 = COLORS.textDim
-statusLbl.Font = Enum.Font.Code
-statusLbl.TextSize = 11
-statusLbl.TextXAlignment = Enum.TextXAlignment.Left
-statusLbl.Parent = body
-corner(statusLbl, 6)
-local sPad = Instance.new("UIPadding", statusLbl)
-sPad.PaddingLeft = UDim.new(0, 10)
+-- Count input row
+local countRow = Instance.new("Frame")
+countRow.Size = UDim2.new(1, 0, 0, 36)
+countRow.Position = UDim2.new(0, 0, 0, 0)
+countRow.BackgroundTransparency = 1
+countRow.Parent = body
+
+local countLbl = Instance.new("TextLabel")
+countLbl.Size = UDim2.new(0, 100, 1, 0)
+countLbl.BackgroundTransparency = 1
+countLbl.Text = "Jumlah:"
+countLbl.TextColor3 = COLORS.textDim
+countLbl.Font = Enum.Font.GothamMedium
+countLbl.TextSize = 11
+countLbl.TextXAlignment = Enum.TextXAlignment.Left
+countLbl.Parent = countRow
+
+local countBox = Instance.new("TextBox")
+countBox.Size = UDim2.new(1, -100, 1, 0)
+countBox.Position = UDim2.new(0, 100, 0, 0)
+countBox.BackgroundColor3 = COLORS.input
+countBox.Text = "1"
+countBox.PlaceholderText = "1"
+countBox.TextColor3 = COLORS.text
+countBox.PlaceholderColor3 = COLORS.placeholder
+countBox.Font = Enum.Font.Code
+countBox.TextSize = 13
+countBox.TextXAlignment = Enum.TextXAlignment.Center
+countBox.ClearTextOnFocus = false
+countBox.BorderSizePixel = 0
+countBox.Parent = countRow
+corner(countBox, 6)
+
+-- Info label
+local infoLbl = Instance.new("TextLabel")
+infoLbl.Size = UDim2.new(1, 0, 0, 20)
+infoLbl.Position = UDim2.new(0, 0, 0, 42)
+infoLbl.BackgroundColor3 = COLORS.header
+infoLbl.BorderSizePixel = 0
+infoLbl.Text = "  Trowel → Trowels"
+infoLbl.TextColor3 = COLORS.textDim
+infoLbl.Font = Enum.Font.Code
+infoLbl.TextSize = 9
+infoLbl.TextXAlignment = Enum.TextXAlignment.Left
+infoLbl.Parent = body
+corner(infoLbl, 5)
 
 -- Send button
 local sendBtn = Instance.new("TextButton")
-sendBtn.Size = UDim2.new(1, 0, 0, 36)
-sendBtn.Position = UDim2.new(0, 0, 0, 38)
+sendBtn.Size = UDim2.new(1, 0, 0, 38)
+sendBtn.Position = UDim2.new(0, 0, 0, 68)
 sendBtn.BackgroundColor3 = COLORS.green
 sendBtn.Text = "SEND TROWEL"
 sendBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -316,22 +289,7 @@ corner(sendBtn, 8)
 -- ============================================================
 -- ===== STATE =====
 -- ============================================================
-local currentCount = 0
 local selectedUser = USERNAME_PRESETS[1]
-
--- ===== REFRESH =====
-local function refresh()
-	local combined = scanAll()
-	currentCount = lookupCount(combined, ITEM_NAME)
-
-	if currentCount > 0 then
-		statusLbl.Text = string.format("Trowel: x%d ✅", currentCount)
-		statusLbl.TextColor3 = COLORS.green
-	else
-		statusLbl.Text = "Trowel: x0 ❌"
-		statusLbl.TextColor3 = COLORS.disabled
-	end
-end
 
 -- ===== PRESET =====
 presetBtn.MouseButton1Click:Connect(function()
@@ -351,6 +309,13 @@ presetBtn.MouseLeave:Connect(function()
 	presetBtn.TextColor3 = COLORS.textDim
 end)
 
+-- Count clamp on focus lost
+countBox.FocusLost:Connect(function()
+	local n = tonumber(countBox.Text) or 1
+	n = math.clamp(math.floor(n), 1, 255)
+	countBox.Text = tostring(n)
+end)
+
 -- ===== SEND =====
 local function flashSend(text, color, duration)
 	sendBtn.Text = text
@@ -364,14 +329,8 @@ local function flashSend(text, color, duration)
 end
 
 sendBtn.MouseButton1Click:Connect(function()
-	refresh()
-
-	if currentCount <= 0 then
-		flashSend("Gak ada trowel", COLORS.red)
-		return
-	end
-
-	local count = math.min(currentCount, 255)
+	local count = tonumber(countBox.Text) or 1
+	count = math.clamp(math.floor(count), 1, 255)
 
 	sendBtn.Text = "Loading..."
 	sendBtn.Active = false
@@ -389,8 +348,6 @@ sendBtn.MouseButton1Click:Connect(function()
 
 		if ok then
 			flashSend(string.format("✓ Trowel x%d", count), COLORS.green, 2)
-			task.wait(1.5)
-			refresh()
 		else
 			flashSend("Fire fail", COLORS.red)
 		end
@@ -411,14 +368,4 @@ end)
 -- Close
 closeBtn.MouseButton1Click:Connect(function()
 	screenGui:Destroy()
-end)
-
--- ===== INIT =====
-refresh()
-
-task.spawn(function()
-	while screenGui.Parent do
-		task.wait(1.5)
-		refresh()
-	end
 end)
