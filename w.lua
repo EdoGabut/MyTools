@@ -1,27 +1,24 @@
 -- ============================================
--- SIMPLE WELD TOGGLE
--- - Slider on/off minimalis
+-- SIMPLE WELD TOGGLE (COMPACT)
+-- - Slider on/off minimalis, compact
 -- - Bisa di-drag & minimize
 -- - Weld karakter di tempat (freeze posisi)
+-- - Saat ON: anti-sit / anti-seat
 -- ============================================
 
 local CoreGui           = game:GetService("CoreGui")
 local Players           = game:GetService("Players")
-local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
 
 -- ============ STATE ============
 local ALIVE = true
 local isWeldOn = false
-local weldConstraint = nil
 local savedCFrame = nil
+local antiSitConn = nil
 
 -- ============ WELD LOGIC ============
--- Bikin karakter "ditempel" di posisi sekarang:
--- RootPart di-anchor di posisi sekarang, humanoid di-set PlatformStand
--- supaya nggak bisa gerak, tapi masih bisa di-unequip tool dsb.
-
 local function weldCharacter()
     local char = LocalPlayer.Character
     if not char then return false end
@@ -30,7 +27,6 @@ local function weldCharacter()
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     if not hrp or not humanoid then return false end
 
-    -- Simpan posisi sekarang
     savedCFrame = hrp.CFrame
 
     -- Freeze physics
@@ -40,11 +36,29 @@ local function weldCharacter()
         end
     end
 
-    -- Biar animasi & tool tetep jalan tapi nggak bisa gerak
     humanoid.PlatformStand = true
     humanoid.WalkSpeed = 0
     humanoid.JumpPower = 0
     humanoid.JumpHeight = 0
+
+    -- === Anti-sit / anti-seat ===
+    -- Kalau humanoid lagi duduk, paksa berdiri
+    pcall(function()
+        humanoid.Sit = false
+        humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+    end)
+
+    -- Listener: begitu ada yang coba sit-kan, langsung tolak
+    antiSitConn = humanoid.StateChanged:Connect(function(_, newState)
+        if not isWeldOn then return end
+        if newState == Enum.HumanoidStateType.Seated
+           or newState == Enum.HumanoidStateType.Sitting then
+            pcall(function()
+                humanoid.Sit = false
+                humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+            end)
+        end
+    end)
 
     return true
 end
@@ -54,6 +68,12 @@ local function unweldCharacter()
     if not char then return false end
 
     local humanoid = char:FindFirstChildOfClass("Humanoid")
+
+    -- Putus listener anti-sit
+    if antiSitConn then
+        antiSitConn:Disconnect()
+        antiSitConn = nil
+    end
 
     for _, part in ipairs(char:GetDescendants()) do
         if part:IsA("BasePart") then
@@ -95,11 +115,11 @@ gui.ResetOnSpawn = false
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = CoreGui
 
--- Layout
-local FULL_W = 160
-local FULL_H = 46
-local MINI_W = 110
-local MINI_H = 26
+-- Layout compact
+local FULL_W = 130
+local FULL_H = 36
+local MINI_W = 90
+local MINI_H = 24
 
 local main = Instance.new("Frame")
 main.Size = UDim2.new(0, FULL_W, 0, FULL_H)
@@ -116,13 +136,13 @@ mc.Parent = main
 
 -- ===== Minimize button (pojok kiri atas) =====
 local minBtn = Instance.new("TextButton")
-minBtn.Size = UDim2.new(0, 18, 0, 18)
+minBtn.Size = UDim2.new(0, 16, 0, 16)
 minBtn.Position = UDim2.new(0, 4, 0, 4)
 minBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 62)
 minBtn.Text = "—"
 minBtn.TextColor3 = Color3.fromRGB(230, 230, 240)
 minBtn.Font = Enum.Font.GothamBold
-minBtn.TextSize = 12
+minBtn.TextSize = 11
 minBtn.Parent = main
 
 local minc = Instance.new("UICorner")
@@ -131,13 +151,13 @@ minc.Parent = minBtn
 
 -- ===== Close button (pojok kanan atas) =====
 local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 18, 0, 18)
-closeBtn.Position = UDim2.new(1, -22, 0, 4)
+closeBtn.Size = UDim2.new(0, 16, 0, 16)
+closeBtn.Position = UDim2.new(1, -20, 0, 4)
 closeBtn.BackgroundTransparency = 1
 closeBtn.Text = "✕"
 closeBtn.TextColor3 = Color3.fromRGB(255, 100, 100)
 closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 12
+closeBtn.TextSize = 11
 closeBtn.Parent = main
 
 closeBtn.MouseButton1Click:Connect(function()
@@ -145,55 +165,54 @@ closeBtn.MouseButton1Click:Connect(function()
     if gui then gui:Destroy() end
 end)
 
--- ===== Body (di-hide saat minimize) =====
+-- ===== Body =====
 local body = Instance.new("Frame")
 body.Name = "Body"
-body.Size = UDim2.new(1, 0, 1, -22)
-body.Position = UDim2.new(0, 0, 0, 22)
+body.Size = UDim2.new(1, 0, 1, -20)
+body.Position = UDim2.new(0, 0, 0, 20)
 body.BackgroundTransparency = 1
 body.Parent = main
 
--- ===== Slider ON/OFF =====
--- Bikin slider sederhana: track + knob geser kiri/kanan
+-- ===== Slider ON/OFF (compact) =====
+local SLIDER_W = 44
+local KNOB_W = 14
+local SLIDER_RANGE = SLIDER_W - KNOB_W  -- 30px
+
 local sliderTrack = Instance.new("Frame")
-sliderTrack.Size = UDim2.new(0, 80, 0, 16)
-sliderTrack.Position = UDim2.new(0.5, -40, 0, 2)
+sliderTrack.Size = UDim2.new(0, SLIDER_W, 0, 14)
+sliderTrack.Position = UDim2.new(0, 6, 0, 1)
 sliderTrack.BackgroundColor3 = Color3.fromRGB(50, 50, 62)
 sliderTrack.BorderSizePixel = 0
 sliderTrack.Parent = body
 
 local stc = Instance.new("UICorner")
-stc.CornerRadius = UDim.new(0, 8)
+stc.CornerRadius = UDim.new(0, 7)
 stc.Parent = sliderTrack
 
 local sliderKnob = Instance.new("Frame")
-sliderKnob.Size = UDim2.new(0, 16, 0, 16)
+sliderKnob.Size = UDim2.new(0, KNOB_W, 0, 14)
 sliderKnob.Position = UDim2.new(0, 0, 0, 0)
 sliderKnob.BackgroundColor3 = Color3.fromRGB(230, 230, 240)
 sliderKnob.BorderSizePixel = 0
 sliderKnob.Parent = sliderTrack
 
 local skc = Instance.new("UICorner")
-skc.CornerRadius = UDim.new(0, 8)
+skc.CornerRadius = UDim.new(0, 7)
 skc.Parent = sliderKnob
 
--- Label ON/OFF di samping track
+-- Label ON/OFF (di kanan track)
 local stateLbl = Instance.new("TextLabel")
-stateLbl.Size = UDim2.new(0, 36, 0, 16)
-stateLbl.Position = UDim2.new(1, -40, 0, 2)
+stateLbl.Size = UDim2.new(0, 60, 0, 14)
+stateLbl.Position = UDim2.new(0, 56, 0, 1)
 stateLbl.BackgroundTransparency = 1
 stateLbl.Text = "OFF"
 stateLbl.TextColor3 = Color3.fromRGB(180, 180, 200)
 stateLbl.Font = Enum.Font.GothamBold
-stateLbl.TextSize = 11
-stateLbl.TextXAlignment = Enum.TextXAlignment.Right
+stateLbl.TextSize = 10
+stateLbl.TextXAlignment = Enum.TextXAlignment.Left
 stateLbl.Parent = body
 
 -- ===== Slider logic =====
-local SLIDER_W = 80
-local KNOB_W = 16
-local SLIDER_RANGE = SLIDER_W - KNOB_W  -- 64px
-
 local function updateSliderVisual(on)
     if on then
         sliderKnob.Position = UDim2.new(0, SLIDER_RANGE, 0, 0)
@@ -212,25 +231,23 @@ local function toggleWeld()
     if not ALIVE then return end
 
     if isWeldOn then
-        -- Matikan
         if unweldCharacter() then
             isWeldOn = false
             updateSliderVisual(false)
             print("🔓 Weld OFF")
         end
     else
-        -- Nyalakan
         if weldCharacter() then
             isWeldOn = true
             updateSliderVisual(true)
-            print("🔒 Weld ON")
+            print("🔒 Weld ON (anti-sit aktif)")
         else
             warn("❌ Gagal weld (karakter belum spawn?)")
         end
     end
 end
 
--- Klik track = toggle
+-- Klik track / knob = toggle
 sliderTrack.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
        or input.UserInputType == Enum.UserInputType.Touch then
@@ -238,15 +255,7 @@ sliderTrack.InputBegan:Connect(function(input)
     end
 end)
 
--- Klik knob = toggle (biar kerasa responsif)
-sliderKnob.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-       or input.UserInputType == Enum.UserInputType.Touch then
-        toggleWeld()
-    end
-end)
-
--- Support drag knob kiri↔kanan
+-- Drag knob
 local dragging = false
 
 sliderKnob.InputBegan:Connect(function(input)
@@ -256,14 +265,14 @@ sliderKnob.InputBegan:Connect(function(input)
     end
 end)
 
-game:GetService("UserInputService").InputEnded:Connect(function(input)
+UserInputService.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
        or input.UserInputType == Enum.UserInputType.Touch then
         dragging = false
     end
 end)
 
-game:GetService("UserInputService").InputChanged:Connect(function(input)
+UserInputService.InputChanged:Connect(function(input)
     if not ALIVE then return end
     if not dragging then return end
 
@@ -274,7 +283,6 @@ game:GetService("UserInputService").InputChanged:Connect(function(input)
         local relX = input.Position.X - trackX
         local pct = math.clamp((relX - KNOB_W/2) / SLIDER_RANGE, 0, 1)
 
-        -- Snap ke kiri/kanan
         local newOn = pct > 0.5
         if newOn ~= isWeldOn then
             toggleWeld()
@@ -301,7 +309,6 @@ end)
 
 -- ============ AUTO UNWELD SAAT RESPAWN ============
 LocalPlayer.CharacterAdded:Connect(function()
-    -- Karakter baru spawn = weld lama hilang
     if isWeldOn then
         isWeldOn = false
         updateSliderVisual(false)
