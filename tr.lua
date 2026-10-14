@@ -1,7 +1,7 @@
 -- ============================================
--- TREE TRANSPARENCY — Simple
--- Cuma pohon transparan. Buah & HarvestPart tetap keliatan.
--- No refresh, no auto-apply. Sekali klik, selesai.
+-- TREE TRANSPARENCY — Auto Active
+-- Langsung transparan saat di-execute
+-- Cuma pohon, HarvestPart tetap keliatan
 -- ============================================
 
 local CoreGui = game:GetService("CoreGui")
@@ -12,15 +12,13 @@ local ROOT = workspace:WaitForChild("Gardens")
 
 -- ============ CONFIG ============
 
-local TRANSPARENCY_LEVEL = 0.9   -- 0.9 = 90% transparan
+local TRANSPARENCY_LEVEL = 1   -- 1 = full transparan
 
 -- ============ STATE ============
 
-local isTransparent = false
+local originalValues = {}   -- [instance] = original transparency
 
 -- ============ PLOT DETECTION ============
-
-local MY_PLOT_NAME = nil
 
 local function isMyPlot(plot)
     -- Cara 1: cek userId di nama plant
@@ -66,8 +64,6 @@ end
 
 -- ============ TRANSPARENCY ============
 
-local originalValues = {}   -- [instance] = original transparency
-
 local function setTreeTransparent()
     local plot = getMyPlot()
     if not plot then
@@ -88,11 +84,9 @@ local function setTreeTransparent()
         if d.Name == "HarvestPart" then
             -- skip
         elseif d:IsA("BasePart") then
-            -- Simpan original
             if originalValues[d] == nil then
                 originalValues[d] = d.Transparency
             end
-            -- Set transparan
             d.Transparency = TRANSPARENCY_LEVEL
             count = count + 1
         elseif d:IsA("Decal") or d:IsA("Texture") then
@@ -119,7 +113,7 @@ local function restoreTree()
     return count
 end
 
--- ============ GUI ============
+-- ============ GUI (MINIMAL — CUMA INFO) ============
 
 local old = CoreGui:FindFirstChild("TreeTransparency")
 if old then old:Destroy() end
@@ -131,7 +125,7 @@ gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = CoreGui
 
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0, 200, 0, 100)
+main.Size = UDim2.new(0, 180, 0, 64)
 main.Position = UDim2.new(0, 20, 0, 60)
 main.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
 main.BorderSizePixel = 0
@@ -169,52 +163,34 @@ closeBtn.Font = Enum.Font.GothamBold
 closeBtn.TextSize = 15
 closeBtn.Parent = title
 closeBtn.MouseButton1Click:Connect(function()
-    if isTransparent then
-        pcall(restoreTree)
-    end
+    pcall(restoreTree)
     gui:Destroy()
 end)
 
--- Toggle button
-local toggleBtn = Instance.new("TextButton")
-toggleBtn.Size = UDim2.new(1, -20, 0, 56)
-toggleBtn.Position = UDim2.new(0, 10, 0, 36)
-toggleBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
-toggleBtn.Text = "🌳 TRANSPARENT: OFF"
-toggleBtn.TextColor3 = Color3.fromRGB(230, 230, 240)
-toggleBtn.Font = Enum.Font.GothamBold
-toggleBtn.TextSize = 14
-toggleBtn.Parent = main
+-- Status
+local statusLbl = Instance.new("TextLabel")
+statusLbl.Size = UDim2.new(1, -20, 0, 26)
+statusLbl.Position = UDim2.new(0, 10, 0, 32)
+statusLbl.BackgroundTransparency = 1
+statusLbl.Text = "✅ Active"
+statusLbl.TextColor3 = Color3.fromRGB(150, 255, 150)
+statusLbl.Font = Enum.Font.GothamBold
+statusLbl.TextSize = 12
+statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+statusLbl.Parent = main
 
-local tbc = Instance.new("UICorner")
-tbc.CornerRadius = UDim.new(0, 8)
-tbc.Parent = toggleBtn
+-- ============ AUTO-EXECUTE ============
 
--- ============ TOGGLE LOGIC ============
+local count = setTreeTransparent()
 
-toggleBtn.MouseButton1Click:Connect(function()
-    if isTransparent then
-        -- OFF → restore
-        local count = restoreTree()
-        isTransparent = false
-        toggleBtn.Text = "🌳 TRANSPARENT: OFF"
-        toggleBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
-        print("🌳 Restored: " .. count .. " parts")
-    else
-        -- ON → make transparent
-        local count = setTreeTransparent()
-        if count > 0 then
-            isTransparent = true
-            toggleBtn.Text = "🌳 TRANSPARENT: ON"
-            toggleBtn.BackgroundColor3 = Color3.fromRGB(40, 130, 70)
-            print("🌳 Transparent: " .. count .. " parts")
-        else
-            print("⚠️ Plot / Plants nggak ketemu")
-        end
-    end
-end)
+if count > 0 then
+    statusLbl.Text = "✅ Active (" .. count .. " parts)"
+    print("🌳 Tree Transparency — " .. count .. " parts affected")
+else
+    statusLbl.Text = "⚠️ Plot nggak ketemu"
+    statusLbl.TextColor3 = Color3.fromRGB(255, 100, 100)
+    print("⚠️ Plot / Plants nggak ketemu")
+end
 
--- ============ INIT ============
-
-print("✅ Tree Transparency loaded")
-print("Klik 🌳 TRANSPARENT buat ON/OFF")
+print("✅ Tree Transparency loaded (auto active)")
+print("Close GUI buat restore pohon")
