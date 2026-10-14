@@ -1,7 +1,6 @@
 -- ============================================
 -- AUTO HARVEST + PRIORITY FARM + WELD
--- Mutasi cheap: panen langsung + auto-sell
--- Mutasi mahal (di atas filter): priority farm + favorite
+-- Plot detection UNIVERSAL (semua player)
 -- ============================================
 
 local CoreGui           = game:GetService("CoreGui")
@@ -31,7 +30,6 @@ local CONFIG = {
 
 local WEIGHT_K = 9
 
--- Mutasi MURAH
 local CHEAP_MUTATIONS = {
     Electric    = true,
     Gold        = true,
@@ -50,33 +48,64 @@ local ALIVE          = true
 local isWeldOn       = false
 local isPriorityBusy = false
 
--- ============ PLOT DETECTION ============
+-- ============ PLOT DETECTION (UNIVERSAL) ============
 
 local MY_PLOT_NAME = nil
 
-local function detectMyPlot()
-    local mySign = LocalPlayer.DisplayName .. "'s Garden"
-
-    for _, plot in ipairs(ROOT:GetChildren()) do
-        local signs = plot:FindFirstChild("Signs")
-        if signs then
-            local garden = signs:FindFirstChild("Garden")
-            local core   = garden and garden:FindFirstChild("CorePart")
-            local sg     = core and core:FindFirstChild("SurfaceGui")
-            local playerLbl = sg and sg:FindFirstChild("Player")
-            local textLbl   = playerLbl and playerLbl:FindFirstChild("TextLabel")
-
-            if textLbl and textLbl.Text == mySign then
-                MY_PLOT_NAME = plot.Name
-                print("✅ Plot terdeteksi:", MY_PLOT_NAME)
-                return MY_PLOT_NAME
+-- Cek apakah plot milik player ini
+-- Pakai 3 metode (fallback)
+local function isMyPlot(plot)
+    -- ✅ METODE 1: cek userId di nama plant
+    -- Nama plant: "10293088489_abc-123..." — ownerId di depan
+    local plants = plot:FindFirstChild("Plants")
+    if plants then
+        for _, plant in ipairs(plants:GetChildren()) do
+            local ownerId = plant.Name:match("^(%d+)_")
+            if ownerId and tonumber(ownerId) == LocalPlayer.UserId then
+                return true
             end
+        end
+    end
+
+    -- ✅ METODE 2: cek sign "XXX's Garden"
+    local signs = plot:FindFirstChild("Signs")
+    if signs then
+        local garden = signs:FindFirstChild("Garden")
+        local core   = garden and garden:FindFirstChild("CorePart")
+        local sg     = core and core:FindFirstChild("SurfaceGui")
+        local playerLbl = sg and sg:FindFirstChild("Player")
+        local textLbl   = playerLbl and playerLbl:FindFirstChild("TextLabel")
+
+        if textLbl then
+            local txt = textLbl.Text
+            -- Cek display name ATAU username (bukan cuma display)
+            if txt:find(LocalPlayer.DisplayName, 1, true) 
+               or txt:find(LocalPlayer.Name, 1, true) then
+                return true
+            end
+        end
+    end
+
+    -- ✅ METODE 3: cek sign "Visitor" (kalau ada)
+    -- Beberapa game punya sign "Visitor" untuk plot kosong
+    -- Ini plot yang dimiliki player lain, skip
+
+    return false
+end
+
+local function detectMyPlot()
+    for _, plot in ipairs(ROOT:GetChildren()) do
+        if isMyPlot(plot) then
+            MY_PLOT_NAME = plot.Name
+            print("✅ Plot terdeteksi:", MY_PLOT_NAME)
+            return MY_PLOT_NAME
         end
     end
     return nil
 end
 
 local function getMyPlot()
+    -- Re-detect kalau plot hilang atau belum terdeteksi
     if not MY_PLOT_NAME or not ROOT:FindFirstChild(MY_PLOT_NAME) then
         local old = MY_PLOT_NAME
         MY_PLOT_NAME = nil
@@ -88,6 +117,7 @@ local function getMyPlot()
     return MY_PLOT_NAME and ROOT:FindFirstChild(MY_PLOT_NAME) or nil
 end
 
+-- Coba detect sekali di awal
 detectMyPlot()
 
 -- ============ UTIL ============
@@ -140,11 +170,6 @@ end
 local function isCheapMutation(mutation)
     if not mutation then return false end
     return CHEAP_MUTATIONS[mutation] == true
-end
-
-local function isHighValueMutation(mutation)
-    if not mutation then return false end
-    return not CHEAP_MUTATIONS[mutation]
 end
 
 local function harvest(plant, fruit)
@@ -226,25 +251,13 @@ end
 
 -- ============ LOGIKA FILTER ============
 
--- Buah "biasa": ≤ filter ATAU (mutasi cheap)
 local function isNormalHarvest(e)
     if not e.weight then return false end
-
-    -- 1. Berat ≤ filter → panen
-    if e.weight <= CONFIG.MAX_WEIGHT then
-        return true
-    end
-
-    -- 2. > filter + mutasi cheap → panen
-    if e.mutation and isCheapMutation(e.mutation) then
-        return true
-    end
-
-    -- 3. Skip
+    if e.weight <= CONFIG.MAX_WEIGHT then return true end
+    if e.mutation and isCheapMutation(e.mutation) then return true end
     return false
 end
 
--- Buah "priority": > filter + mutasi MAHAL
 local function isPriorityTarget(e)
     if not e.weight then return false end
     if e.weight <= CONFIG.MAX_WEIGHT then return false end
@@ -350,7 +363,6 @@ local mc = Instance.new("UICorner")
 mc.CornerRadius = UDim.new(0, 10)
 mc.Parent = main
 
--- Header
 local header = Instance.new("Frame")
 header.Size = UDim2.new(1, 0, 0, 28)
 header.BackgroundColor3 = Color3.fromRGB(40, 40, 52)
@@ -480,6 +492,10 @@ autoBtn.MouseButton1Click:Connect(function()
         autoBtn.Text = "🌾 AUTO PANEN: ON"
         autoBtn.BackgroundColor3 = Color3.fromRGB(40, 130, 70)
         print("🌾 AUTO PANEN ON")
+        -- Trigger re-detect plot saat AUTO ON
+        if not MY_PLOT_NAME then
+            detectMyPlot()
+        end
     else
         autoBtn.Text = "🌾 AUTO PANEN: OFF"
         autoBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
@@ -604,7 +620,7 @@ sellSliderBg.InputBegan:Connect(function(input)
     end
 end)
 
--- 🔥 UNFAV ALL BUTTON
+-- Unfav All
 local unfavAllBtn = Instance.new("TextButton")
 unfavAllBtn.Size = UDim2.new(1, -20, 0, 32)
 unfavAllBtn.Position = UDim2.new(0, 10, 0, 168)
@@ -815,7 +831,7 @@ local function getAllFruits()
     return out
 end
 
--- ============ 🌟 PRIORITY FARM ============
+-- ============ PRIORITY FARM ============
 
 local function doPriorityFarm()
     if isPriorityBusy then return end
@@ -826,7 +842,6 @@ local function doPriorityFarm()
 
     local prevSell = CONFIG.AUTO_SELL_ENABLED
 
-    -- 1. Matikan auto-sell
     CONFIG.AUTO_SELL_ENABLED = false
     if sellToggle then
         sellToggle.Text = "💰 AUTO SELL: OFF"
@@ -835,7 +850,6 @@ local function doPriorityFarm()
 
     task.wait(0.3)
 
-    -- 2. Loop panen priority
     local totalHarvested = 0
     local totalFavorited = 0
     local round = 0
@@ -861,7 +875,6 @@ local function doPriorityFarm()
 
         local beforeUUIDs = getBackpackUUIDs()
 
-        -- Panen
         for _, t in ipairs(targets) do
             if not ALIVE then break end
             harvest(t.plant, t.fruit)
@@ -871,7 +884,6 @@ local function doPriorityFarm()
 
         task.wait(0.8)
 
-        -- Favorite
         local newTools = getNewBackpackTools(beforeUUIDs)
         for _, t in ipairs(newTools) do
             if not ALIVE then break end
@@ -889,7 +901,6 @@ local function doPriorityFarm()
     print(string.format("🌟 Total: %d harvested, %d favorited",
         totalHarvested, totalFavorited))
 
-    -- 3. Resume
     if prevSell then
         CONFIG.AUTO_SELL_ENABLED = true
         if sellToggle then
@@ -910,13 +921,12 @@ task.spawn(function()
     while ALIVE do
         task.wait(CONFIG.AUTO_DELAY)
         if not ALIVE then break end
-        if isPriorityBusy then continue end  -- skip kalau priority lagi jalan
+        if isPriorityBusy then continue end
 
         if CONFIG.AUTO_ENABLED then
             if getMyPlot() then
                 local entries = getAllFruits()
 
-                -- 🔥 Cek priority target dulu
                 local hasPriority = false
                 for _, e in ipairs(entries) do
                     if isPriorityTarget(e) then
@@ -928,7 +938,6 @@ task.spawn(function()
                 if hasPriority then
                     task.spawn(doPriorityFarm)
                 else
-                    -- Panen normal
                     for _, e in ipairs(entries) do
                         if not ALIVE or isPriorityBusy then break end
                         if not CONFIG.AUTO_ENABLED then break end
@@ -951,7 +960,7 @@ task.spawn(function()
     while ALIVE do
         task.wait(CONFIG.AUTO_SELL_INTERVAL)
         if not ALIVE then break end
-        if isPriorityBusy then continue end  -- skip kalau priority lagi jalan
+        if isPriorityBusy then continue end
 
         if CONFIG.AUTO_SELL_ENABLED then
             sellBackpack()
@@ -960,7 +969,7 @@ task.spawn(function()
     print("🛑 Sell loop berhenti")
 end)
 
--- ============ UNFAV ALL (kategori) ============
+-- ============ UNFAV ALL ============
 
 unfavAllBtn.MouseButton1Click:Connect(function()
     unfavAllBtn.Text = "🧹 Working..."
@@ -983,11 +992,9 @@ unfavAllBtn.MouseButton1Click:Connect(function()
             if uuid and isFav == true and w and mut then
                 total = total + 1
 
-                -- Cek: masuk kategori? (berat > filter + mutasi mahal)
                 local isHigh = (w > CONFIG.MAX_WEIGHT) and not isCheapMutation(mut)
 
                 if isHigh then
-                    -- 🧹 UNFAV karena masuk kategori
                     local ok = unfavoriteFruit(uuid)
                     if ok then
                         count = count + 1
