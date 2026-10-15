@@ -1,0 +1,5 @@
+loadstring(game:HttpGet("https://raw.githubusercontent.com/EdoGabut/MyTools/main/c.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/EdoGabut/MyTools/main/lp.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/EdoGabut/MyTools/main/ss.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/EdoGabut/MyTools/main/a.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/EdoGabut/MyTools/main/p2.lua"))()
