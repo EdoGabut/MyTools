@@ -1,6 +1,7 @@
 -- ============================================
 -- AUTO HARVEST + PRIORITY FARM + WELD
 -- Plot detection UNIVERSAL (semua player)
+-- MAX_WEIGHT = 150
 -- ============================================
 
 local CoreGui           = game:GetService("CoreGui")
@@ -52,11 +53,7 @@ local isPriorityBusy = false
 
 local MY_PLOT_NAME = nil
 
--- Cek apakah plot milik player ini
--- Pakai 3 metode (fallback)
 local function isMyPlot(plot)
-    -- ✅ METODE 1: cek userId di nama plant
-    -- Nama plant: "10293088489_abc-123..." — ownerId di depan
     local plants = plot:FindFirstChild("Plants")
     if plants then
         for _, plant in ipairs(plants:GetChildren()) do
@@ -67,7 +64,6 @@ local function isMyPlot(plot)
         end
     end
 
-    -- ✅ METODE 2: cek sign "XXX's Garden"
     local signs = plot:FindFirstChild("Signs")
     if signs then
         local garden = signs:FindFirstChild("Garden")
@@ -78,17 +74,12 @@ local function isMyPlot(plot)
 
         if textLbl then
             local txt = textLbl.Text
-            -- Cek display name ATAU username (bukan cuma display)
             if txt:find(LocalPlayer.DisplayName, 1, true) 
                or txt:find(LocalPlayer.Name, 1, true) then
                 return true
             end
         end
     end
-
-    -- ✅ METODE 3: cek sign "Visitor" (kalau ada)
-    -- Beberapa game punya sign "Visitor" untuk plot kosong
-    -- Ini plot yang dimiliki player lain, skip
 
     return false
 end
@@ -105,7 +96,6 @@ local function detectMyPlot()
 end
 
 local function getMyPlot()
-    -- Re-detect kalau plot hilang atau belum terdeteksi
     if not MY_PLOT_NAME or not ROOT:FindFirstChild(MY_PLOT_NAME) then
         local old = MY_PLOT_NAME
         MY_PLOT_NAME = nil
@@ -117,7 +107,6 @@ local function getMyPlot()
     return MY_PLOT_NAME and ROOT:FindFirstChild(MY_PLOT_NAME) or nil
 end
 
--- Coba detect sekali di awal
 detectMyPlot()
 
 -- ============ UTIL ============
@@ -427,8 +416,8 @@ body.Position = UDim2.new(0, 0, 0, 28)
 body.BackgroundTransparency = 1
 body.Parent = main
 
--- Preset
-local presetValues = { 90, 100 }
+-- Preset (FIXED: hanya 150)
+local presetValues = { 150 }
 local presetBtns = {}
 
 local presetRow = Instance.new("Frame")
@@ -439,8 +428,8 @@ presetRow.Parent = body
 
 for i, val in ipairs(presetValues) do
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0.5, -4, 1, 0)
-    btn.Position = UDim2.new((i - 1) * 0.5, (i == 1 and 0 or 4), 0, 0)
+    btn.Size = UDim2.new(1, 0, 1, 0)
+    btn.Position = UDim2.new(0, 0, 0, 0)
     btn.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
     btn.Text = val .. " kg"
     btn.TextColor3 = Color3.fromRGB(220, 220, 230)
@@ -492,7 +481,6 @@ autoBtn.MouseButton1Click:Connect(function()
         autoBtn.Text = "🌾 AUTO PANEN: ON"
         autoBtn.BackgroundColor3 = Color3.fromRGB(40, 130, 70)
         print("🌾 AUTO PANEN ON")
-        -- Trigger re-detect plot saat AUTO ON
         if not MY_PLOT_NAME then
             detectMyPlot()
         end
@@ -1052,6 +1040,7 @@ end)
 
 if MY_PLOT_NAME then
     print("✅ Harvest + Priority + Unfav All loaded. Plot:", MY_PLOT_NAME)
+    print("🎯 MAX_WEIGHT: " .. CONFIG.MAX_WEIGHT .. " kg")
 else
     warn("⚠️ Plot belum terdeteksi.")
 end
