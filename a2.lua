@@ -26,7 +26,7 @@ local SPRINKLE_TOOL_NAME = "Rare Cider Sprinkler"
 local WATER_PREFIX    = "j"
 local SPRINKLE_PREFIX = "8"
 
-local CHECK_INTERVAL  = 8
+local CHECK_INTERVAL  = 5
 local SPRINKLE_SETTLE = 1.0
 
 -- ============ GUARD ============
