@@ -28,7 +28,7 @@ local CONFIG = {
     ONLY_MY_PLOTS       = true,
     WELD_ENABLED        = false,
     PRIORITY_RESUME_DELAY = 3,
-    FAVORITE_CAP        = 50,
+    FAVORITE_CAP        = 10,
     CAP_CHECK_INTERVAL  = 5,
 }
 
