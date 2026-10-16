@@ -1,16 +1,18 @@
 -- ============================================
--- AUTO HARVEST + PRIORITY FARM + AUTO CLEAR
+-- AUTO HARVEST + PRIORITY FARM
 -- Filter:
 --   - ≤ 80 kg → panen + jual
 --   - > 80 + mutasi cheap → panen + jual
---   - > 80 + mutasi mahal + ≤ 200 kg → panen + jual
---   - > 200 kg + mutasi mahal → panen + SAVE (favorite)
+--   - > 80 + mutasi mahal + ≤ 150 kg → panen + jual
+--   - > 150 kg + mutasi mahal → panen + SAVE (favorite)
 --   - > 80 tanpa mutasi → SKIP (nunggu mutasi)
+-- ULTRA Minimalis
 -- ============================================
 
 local CoreGui           = game:GetService("CoreGui")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players           = game:GetService("Players")
+local UserInputService  = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -23,14 +25,12 @@ local ROOT = workspace:WaitForChild("Gardens")
 
 local CONFIG = {
     MAX_WEIGHT          = 80,
-    SAVE_WEIGHT         = 200,
+    SAVE_WEIGHT         = 150,
     AUTO_ENABLED        = false,
     AUTO_SELL_ENABLED   = false,
     AUTO_SELL_INTERVAL  = 3,
     AUTO_DELAY          = 0.25,
     ONLY_MY_PLOTS       = true,
-    FAVORITE_CAP        = 50,
-    CAP_CHECK_INTERVAL  = 5,
 }
 
 local WEIGHT_K = 9
@@ -45,15 +45,13 @@ local CHEAP_MUTATIONS = {
 
 local SELL_PAYLOAD = "\015\001\018"
 local FAV_PREFIX   = "\179\0004$"
-local UNFAV_PREFIX = "\179\0006$"
 
 -- ============ STATE ============
 
 local ALIVE          = true
 local isPriorityBusy = false
-local isClearing     = false
 
--- ============ PLOT DETECTION (UNIVERSAL) ============
+-- ============ PLOT DETECTION ============
 
 local MY_PLOT_NAME = nil
 
@@ -197,15 +195,6 @@ local function favoriteFruit(uuid)
     return ok
 end
 
-local function unfavoriteFruit(uuid)
-    if not ALIVE or not uuid then return false end
-    local payload = UNFAV_PREFIX .. uuid .. "\000"
-    local ok = pcall(function()
-        Packet:FireServer(buffer.fromstring(payload))
-    end)
-    return ok
-end
-
 -- ============ BACKPACK UUID ============
 
 local function getBackpackUUIDs()
@@ -242,24 +231,8 @@ local function getNewBackpackTools(beforeUUIDs)
     return newTools
 end
 
-local function countFavorites()
-    local count = 0
-    local backpack = LocalPlayer:FindFirstChild("Backpack")
-    if not backpack then return 0 end
-
-    for _, item in ipairs(backpack:GetChildren()) do
-        local uuid = item:GetAttribute("Id")
-        local isFav = item:GetAttribute("IsFavorite")
-        if uuid and isFav == true then
-            count = count + 1
-        end
-    end
-    return count
-end
-
 -- ============ LOGIKA FILTER ============
 
--- Panen normal: ≤ 80 kg, ATAU > 80 + mutasi cheap
 local function isNormalHarvest(e)
     if not e.weight then return false end
     if e.weight <= CONFIG.MAX_WEIGHT then return true end
@@ -267,7 +240,6 @@ local function isNormalHarvest(e)
     return false
 end
 
--- Priority target: > MAX_WEIGHT + mutasi MAHAL
 local function isPriorityTarget(e)
     if not e.weight then return false end
     if e.weight <= CONFIG.MAX_WEIGHT then return false end
@@ -276,7 +248,6 @@ local function isPriorityTarget(e)
     return true
 end
 
--- SAVE target: > 200 kg + mutasi MAHAL
 local function isSaveTarget(e)
     if not e.weight then return false end
     if e.weight <= CONFIG.SAVE_WEIGHT then return false end
@@ -285,7 +256,6 @@ local function isSaveTarget(e)
     return true
 end
 
--- JUAL target (dari priority): > 80 + mutasi MAHAL + ≤ 200 kg
 local function isSellTarget(e)
     if not e.weight then return false end
     if e.weight <= CONFIG.MAX_WEIGHT then return false end
@@ -308,7 +278,7 @@ local function shutdown(reason)
     end
 end
 
--- ============ GUI (MINIMALIS) ============
+-- ============ GUI (ULTRA MINIMALIS) ============
 
 local old = CoreGui:FindFirstChild("AutoHarvestMini")
 if old then old:Destroy() end
@@ -319,8 +289,11 @@ gui.ResetOnSpawn = false
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = CoreGui
 
+local FULL_H  = 90
+local MINI_H  = 28
+
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0, 180, 0, 118)
+main.Size = UDim2.new(0, 150, 0, FULL_H)
 main.Position = UDim2.new(0, 20, 0, 60)
 main.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
 main.BorderSizePixel = 0
@@ -332,6 +305,7 @@ local mc = Instance.new("UICorner")
 mc.CornerRadius = UDim.new(0, 10)
 mc.Parent = main
 
+-- Header
 local header = Instance.new("Frame")
 header.Size = UDim2.new(1, 0, 0, 28)
 header.BackgroundColor3 = Color3.fromRGB(40, 40, 52)
@@ -349,25 +323,42 @@ headerFix.BackgroundColor3 = Color3.fromRGB(40, 40, 52)
 headerFix.BorderSizePixel = 0
 headerFix.Parent = header
 
+-- Minimize button
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 20, 0, 20)
+minBtn.Position = UDim2.new(0, 4, 0, 4)
+minBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
+minBtn.Text = "—"
+minBtn.TextColor3 = Color3.fromRGB(230, 230, 240)
+minBtn.Font = Enum.Font.GothamBold
+minBtn.TextSize = 12
+minBtn.Parent = header
+
+local minc = Instance.new("UICorner")
+minc.CornerRadius = UDim.new(0, 5)
+minc.Parent = minBtn
+
+-- Title
 local titleLbl = Instance.new("TextLabel")
-titleLbl.Size = UDim2.new(1, -30, 1, 0)
-titleLbl.Position = UDim2.new(0, 10, 0, 0)
+titleLbl.Size = UDim2.new(1, -50, 1, 0)
+titleLbl.Position = UDim2.new(0, 26, 0, 0)
 titleLbl.BackgroundTransparency = 1
-titleLbl.Text = "🌾 Auto Farm"
+titleLbl.Text = "🌾 Farm"
 titleLbl.TextColor3 = Color3.fromRGB(230, 230, 240)
 titleLbl.TextXAlignment = Enum.TextXAlignment.Left
 titleLbl.Font = Enum.Font.GothamBold
-titleLbl.TextSize = 12
+titleLbl.TextSize = 11
 titleLbl.Parent = header
 
+-- Close button
 local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 22, 0, 22)
-closeBtn.Position = UDim2.new(1, -26, 0, 3)
+closeBtn.Size = UDim2.new(0, 20, 0, 20)
+closeBtn.Position = UDim2.new(1, -24, 0, 4)
 closeBtn.BackgroundTransparency = 1
 closeBtn.Text = "✕"
 closeBtn.TextColor3 = Color3.fromRGB(255, 100, 100)
 closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 13
+closeBtn.TextSize = 12
 closeBtn.Parent = header
 
 closeBtn.MouseButton1Click:Connect(function()
@@ -375,6 +366,7 @@ closeBtn.MouseButton1Click:Connect(function()
     if gui then gui:Destroy() end
 end)
 
+-- Body
 local body = Instance.new("Frame")
 body.Name = "Body"
 body.Size = UDim2.new(1, 0, 1, -28)
@@ -382,58 +374,138 @@ body.Position = UDim2.new(0, 0, 0, 28)
 body.BackgroundTransparency = 1
 body.Parent = main
 
-local autoBtn = Instance.new("TextButton")
-autoBtn.Size = UDim2.new(1, -20, 0, 36)
-autoBtn.Position = UDim2.new(0, 10, 0, 12)
-autoBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
-autoBtn.Text = "🌾 AUTO PANEN: OFF"
-autoBtn.TextColor3 = Color3.fromRGB(230, 230, 240)
-autoBtn.Font = Enum.Font.GothamBold
-autoBtn.TextSize = 13
-autoBtn.Parent = body
+-- ============ SLIDER TOGGLE BUILDER ============
 
-local ac = Instance.new("UICorner")
-ac.CornerRadius = UDim.new(0, 8)
-ac.Parent = autoBtn
+local function makeSliderToggle(parent, labelText, yPos, getState, setState)
+    -- Label
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(0, 60, 0, 16)
+    lbl.Position = UDim2.new(0, 10, 0, yPos)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = labelText
+    lbl.TextColor3 = Color3.fromRGB(200, 200, 220)
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 10
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = parent
 
-autoBtn.MouseButton1Click:Connect(function()
-    CONFIG.AUTO_ENABLED = not CONFIG.AUTO_ENABLED
-    if CONFIG.AUTO_ENABLED then
-        autoBtn.Text = "🌾 AUTO PANEN: ON"
-        autoBtn.BackgroundColor3 = Color3.fromRGB(40, 130, 70)
-        print("🌾 AUTO PANEN ON")
-        if not MY_PLOT_NAME then detectMyPlot() end
-    else
-        autoBtn.Text = "🌾 AUTO PANEN: OFF"
-        autoBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
-        print("🌾 AUTO PANEN OFF")
+    -- Track
+    local TRACK_W = 40
+    local KNOB_W  = 16
+    local RANGE   = TRACK_W - KNOB_W
+
+    local track = Instance.new("Frame")
+    track.Size = UDim2.new(0, TRACK_W, 0, 16)
+    track.Position = UDim2.new(1, -TRACK_W - 10, 0, yPos)
+    track.BackgroundColor3 = Color3.fromRGB(50, 50, 62)
+    track.BorderSizePixel = 0
+    track.Parent = parent
+
+    local tc = Instance.new("UICorner")
+    tc.CornerRadius = UDim.new(0, 8)
+    tc.Parent = track
+
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.new(0, KNOB_W, 0, 16)
+    knob.Position = UDim2.new(0, 0, 0, 0)
+    knob.BackgroundColor3 = Color3.fromRGB(230, 230, 240)
+    knob.BorderSizePixel = 0
+    knob.Parent = track
+
+    local kc = Instance.new("UICorner")
+    kc.CornerRadius = UDim.new(0, 8)
+    kc.Parent = knob
+
+    local function updateVisual()
+        local on = getState()
+        if on then
+            knob.Position = UDim2.new(0, RANGE, 0, 0)
+            track.BackgroundColor3 = Color3.fromRGB(40, 130, 70)
+        else
+            knob.Position = UDim2.new(0, 0, 0, 0)
+            track.BackgroundColor3 = Color3.fromRGB(50, 50, 62)
+        end
     end
-end)
 
-local sellBtn = Instance.new("TextButton")
-sellBtn.Size = UDim2.new(1, -20, 0, 36)
-sellBtn.Position = UDim2.new(0, 10, 0, 54)
-sellBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
-sellBtn.Text = "💰 AUTO SELL: OFF"
-sellBtn.TextColor3 = Color3.fromRGB(230, 230, 240)
-sellBtn.Font = Enum.Font.GothamBold
-sellBtn.TextSize = 13
-sellBtn.Parent = body
+    -- Click handler
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           or input.UserInputType == Enum.UserInputType.Touch then
+            setState(not getState())
+            updateVisual()
+        end
+    end)
 
-local stc = Instance.new("UICorner")
-stc.CornerRadius = UDim.new(0, 8)
-stc.Parent = sellBtn
+    -- Drag handler
+    local dragging = false
 
-sellBtn.MouseButton1Click:Connect(function()
-    CONFIG.AUTO_SELL_ENABLED = not CONFIG.AUTO_SELL_ENABLED
-    if CONFIG.AUTO_SELL_ENABLED then
-        sellBtn.Text = "💰 AUTO SELL: ON"
-        sellBtn.BackgroundColor3 = Color3.fromRGB(40, 130, 70)
-        print("💰 AUTO SELL ON")
+    knob.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+           or input.UserInputType == Enum.UserInputType.Touch then
+            local trackX = track.AbsolutePosition.X
+            local relX = input.Position.X - trackX
+            local pct = math.clamp((relX - KNOB_W/2) / RANGE, 0, 1)
+            local newOn = pct > 0.5
+            if newOn ~= getState() then
+                setState(newOn)
+                updateVisual()
+            end
+        end
+    end)
+
+    updateVisual()
+    return { updateVisual = updateVisual }
+end
+
+-- AUTO PANEN slider
+makeSliderToggle(body, "🌾 Auto Panen", 8,
+    function() return CONFIG.AUTO_ENABLED end,
+    function(v)
+        CONFIG.AUTO_ENABLED = v
+        print("🌾 AUTO PANEN " .. (v and "ON" or "OFF"))
+        if v and not MY_PLOT_NAME then detectMyPlot() end
+    end
+)
+
+-- AUTO SELL slider
+makeSliderToggle(body, "💰 Auto Sell", 36,
+    function() return CONFIG.AUTO_SELL_ENABLED end,
+    function(v)
+        CONFIG.AUTO_SELL_ENABLED = v
+        print("💰 AUTO SELL " .. (v and "ON" or "OFF"))
+    end
+)
+
+-- ============ MINIMIZE LOGIC ============
+
+local isMinimized = false
+
+minBtn.MouseButton1Click:Connect(function()
+    isMinimized = not isMinimized
+
+    if isMinimized then
+        body.Visible = false
+        main.Size = UDim2.new(0, 150, 0, MINI_H)
+        minBtn.Text = "+"
     else
-        sellBtn.Text = "💰 AUTO SELL: OFF"
-        sellBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
-        print("💰 AUTO SELL OFF")
+        body.Visible = true
+        main.Size = UDim2.new(0, 150, 0, FULL_H)
+        minBtn.Text = "—"
     end
 end)
 
@@ -476,7 +548,7 @@ end
 -- ============ PRIORITY FARM ============
 
 local function doPriorityFarm()
-    if isPriorityBusy or isClearing then return end
+    if isPriorityBusy then return end
     isPriorityBusy = true
 
     print("")
@@ -485,10 +557,6 @@ local function doPriorityFarm()
     local prevSell = CONFIG.AUTO_SELL_ENABLED
 
     CONFIG.AUTO_SELL_ENABLED = false
-    if sellBtn then
-        sellBtn.Text = "💰 AUTO SELL: OFF"
-        sellBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
-    end
 
     task.wait(0.3)
 
@@ -497,12 +565,11 @@ local function doPriorityFarm()
     local round = 0
 
     while ALIVE and round < 10 do
-        if isClearing then break end
         round = round + 1
 
         local entries = getAllFruits()
-        local saveTargets = {}   -- > 200 + mutasi mahal
-        local sellTargets = {}   -- > 80 + mutasi mahal + ≤ 200
+        local saveTargets = {}
+        local sellTargets = {}
 
         for _, e in ipairs(entries) do
             if isPriorityTarget(e) then
@@ -519,7 +586,7 @@ local function doPriorityFarm()
             break
         end
 
-        print(string.format("🌟 Round %d: %d save (≥200), %d jual (<200)",
+        print(string.format("🌟 Round %d: %d save, %d jual",
             round, #saveTargets, #sellTargets))
 
         local beforeUUIDs = getBackpackUUIDs()
@@ -528,45 +595,37 @@ local function doPriorityFarm()
         for _, t in ipairs(saveTargets) do table.insert(allTargets, t) end
         for _, t in ipairs(sellTargets) do table.insert(allTargets, t) end
 
-        -- Panen semua
         for _, t in ipairs(allTargets) do
-            if not ALIVE or isClearing then break end
+            if not ALIVE then break end
             harvest(t.plant, t.fruit)
             task.wait(0.15)
         end
 
         task.wait(0.8)
 
-        -- Proses setelah masuk backpack
         local newTools = getNewBackpackTools(beforeUUIDs)
 
         for _, t in ipairs(newTools) do
-            if not ALIVE or isClearing then break end
+            if not ALIVE then break end
 
             local w = t.weight or 0
             local mut = t.mutation
             local isCheap = isCheapMutation(mut)
 
-            -- 🔥 LOGIKA SAVE:
-            -- Save cuma kalau > 200kg DAN mutasi MAHAL
             if w > CONFIG.SAVE_WEIGHT and not isCheap then
-                -- 💾 SAVE (favorite)
                 if favoriteFruit(t.uuid) then
                     totalSaved = totalSaved + 1
                     print(string.format("🌟 💾 SAVE: %s [%s] %.2fkg",
                         t.name, mut or "-", w))
                 end
             else
-                -- 💰 JUAL (semua sisanya)
                 totalSold = totalSold + 1
-                print(string.format("🌟 💰 JUAL: %s [%s] %.2fkg %s",
-                    t.name, mut or "-", w,
-                    isCheap and "(cheap mut)" or ""))
+                print(string.format("🌟 💰 JUAL: %s [%s] %.2fkg",
+                    t.name, mut or "-", w))
             end
             task.wait(0.15)
         end
 
-        -- Jual semua yang gak di-save
         if #newTools > 0 then
             task.wait(0.5)
             sellBackpack()
@@ -578,88 +637,13 @@ local function doPriorityFarm()
     print(string.format("🌟 Total: %d saved, %d sold",
         totalSaved, totalSold))
 
-    if prevSell and not isClearing then
+    if prevSell then
         CONFIG.AUTO_SELL_ENABLED = true
-        if sellBtn then
-            sellBtn.Text = "💰 AUTO SELL: ON"
-            sellBtn.BackgroundColor3 = Color3.fromRGB(40, 130, 70)
-        end
     end
 
     print("🌟 ═══════════════════════")
     print("")
 
-    isPriorityBusy = false
-end
-
--- ============ AUTO CLEAR MODE ============
-
-local function doClearMode()
-    if isClearing then return end
-    isClearing = true
-    isPriorityBusy = true
-
-    print("")
-    print("🧹 ═══ AUTO CLEAR MODE ═══")
-
-    local prevAuto = CONFIG.AUTO_ENABLED
-    local prevSell = CONFIG.AUTO_SELL_ENABLED
-
-    CONFIG.AUTO_ENABLED      = false
-    CONFIG.AUTO_SELL_ENABLED = false
-
-    if autoBtn then
-        autoBtn.Text = "🌾 AUTO PANEN: OFF"
-        autoBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
-    end
-    if sellBtn then
-        sellBtn.Text = "💰 AUTO SELL: OFF"
-        sellBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
-    end
-
-    task.wait(0.5)
-
-    print("🧹 Unfavorite semua...")
-    local backpack = LocalPlayer:FindFirstChild("Backpack")
-    local unfavedCount = 0
-
-    if backpack then
-        for _, item in ipairs(backpack:GetChildren()) do
-            local uuid = item:GetAttribute("Id")
-            local isFav = item:GetAttribute("IsFavorite")
-
-            if uuid and isFav == true then
-                if unfavoriteFruit(uuid) then
-                    unfavedCount = unfavedCount + 1
-                end
-                task.wait(0.1)
-            end
-        end
-    end
-
-    print(string.format("🧹 Unfavorited: %d", unfavedCount))
-
-    task.wait(2)
-    print("💰 Sell semua...")
-    sellBackpack()
-    task.wait(1)
-
-    CONFIG.AUTO_ENABLED      = prevAuto
-    CONFIG.AUTO_SELL_ENABLED = prevSell
-
-    if prevAuto and autoBtn then
-        autoBtn.Text = "🌾 AUTO PANEN: ON"
-        autoBtn.BackgroundColor3 = Color3.fromRGB(40, 130, 70)
-    end
-    if prevSell and sellBtn then
-        sellBtn.Text = "💰 AUTO SELL: ON"
-        sellBtn.BackgroundColor3 = Color3.fromRGB(40, 130, 70)
-    end
-
-    print("🧹 CLEAR MODE selesai!")
-    print("")
-
-    isClearing = false
     isPriorityBusy = false
 end
 
@@ -669,7 +653,7 @@ task.spawn(function()
     while ALIVE do
         task.wait(CONFIG.AUTO_DELAY)
         if not ALIVE then break end
-        if isPriorityBusy or isClearing then continue end
+        if isPriorityBusy then continue end
 
         if CONFIG.AUTO_ENABLED then
             if getMyPlot() then
@@ -687,7 +671,7 @@ task.spawn(function()
                     task.spawn(doPriorityFarm)
                 else
                     for _, e in ipairs(entries) do
-                        if not ALIVE or isPriorityBusy or isClearing then break end
+                        if not ALIVE or isPriorityBusy then break end
                         if not CONFIG.AUTO_ENABLED then break end
 
                         if isNormalHarvest(e) then
@@ -708,32 +692,13 @@ task.spawn(function()
     while ALIVE do
         task.wait(CONFIG.AUTO_SELL_INTERVAL)
         if not ALIVE then break end
-        if isPriorityBusy or isClearing then continue end
+        if isPriorityBusy then continue end
 
         if CONFIG.AUTO_SELL_ENABLED then
             sellBackpack()
         end
     end
     print("🛑 Sell loop berhenti")
-end)
-
--- ============ FAVORITE CAP CHECK ============
-
-task.spawn(function()
-    while ALIVE do
-        task.wait(CONFIG.CAP_CHECK_INTERVAL)
-        if not ALIVE then break end
-        if isClearing or isPriorityBusy then continue end
-
-        local favCount = countFavorites()
-
-        if favCount >= CONFIG.FAVORITE_CAP then
-            print(string.format("🧹 Favorite cap: %d/%d",
-                favCount, CONFIG.FAVORITE_CAP))
-            task.spawn(doClearMode)
-        end
-    end
-    print("🛑 Favorite check loop berhenti")
 end)
 
 -- ============ CLEANUP ============
@@ -754,8 +719,7 @@ if MY_PLOT_NAME then
     print("✅ Auto Farm loaded. Plot:", MY_PLOT_NAME)
     print("🎯 Kategori: > " .. CONFIG.MAX_WEIGHT .. " kg")
     print("💾 Save: > " .. CONFIG.SAVE_WEIGHT .. " kg + mutasi MAHAL")
-    print("💰 Jual: semua sisanya (termasuk > 200 + cheap mut)")
-    print("🧹 Favorite cap: " .. CONFIG.FAVORITE_CAP)
+    print("💰 Jual: semua sisanya")
 else
     warn("⚠️ Plot belum terdeteksi.")
 end
