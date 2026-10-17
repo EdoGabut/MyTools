@@ -1,6 +1,7 @@
 -- ============================================
--- FRUIT MAIL BUILDER — v9 (Auto Refresh on Fav)
--- Compact • Searchable • Auto-detect Fav Change
+-- FRUIT MAIL BUILDER — v10
+-- + Fav All / Unfav All
+-- + Confirm popup Unfav All ("matikan Auto Sell dulu")
 -- ============================================
 
 local CoreGui           = game:GetService("CoreGui")
@@ -19,6 +20,7 @@ local remote = ReplicatedStorage:WaitForChild("SharedModules")
 local CATEGORY       = "HarvestedFruits"
 local DEFAULT_TARGET = "Alizaberss"
 local REFRESH_RATE   = 3
+local BULK_DELAY     = 0.05
 
 --// ==== HELPERS ====
 local function resolveUsername(username)
@@ -116,6 +118,17 @@ local function buildMultiEntryPayload(targetUserId, entries)
     return final
 end
 
+--// ==== FAV / UNFAV PAYLOAD ====
+local function favoriteFruit(uuid)
+    local payload = "\179\0004$" .. uuid .. "\001"
+    remote:FireServer(buffer.fromstring(payload))
+end
+
+local function unfavoriteFruit(uuid)
+    local payload = "\179\0006$" .. uuid .. "\000"
+    remote:FireServer(buffer.fromstring(payload))
+end
+
 --// ==== PALETTE ====
 local C_BG      = Color3.fromRGB(18, 18, 22)
 local C_CARD    = Color3.fromRGB(28, 28, 34)
@@ -138,11 +151,12 @@ gui.Name = "FruitMailBuilder"
 gui.ResetOnSpawn = false
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.IgnoreGuiInset = true
+gui.DisplayOrder = 999
 gui.Parent = CoreGui
 
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0, 300, 0, 320)
-main.Position = UDim2.new(0.5, -150, 0.5, -150)
+main.Size = UDim2.new(0, 300, 0, 390)
+main.Position = UDim2.new(0.5, -150, 0.5, -195)
 main.BackgroundColor3 = C_BG
 main.BorderSizePixel = 0
 main.Active = true
@@ -167,7 +181,7 @@ local titleLbl = Instance.new("TextLabel")
 titleLbl.Size = UDim2.new(1, -40, 1, 0)
 titleLbl.Position = UDim2.new(0, 12, 0, 0)
 titleLbl.BackgroundTransparency = 1
-titleLbl.Text = "🍎 Fruit Mail"
+titleLbl.Text = "🍎 Fruit Mail v10"
 titleLbl.TextColor3 = C_TEXT
 titleLbl.TextXAlignment = Enum.TextXAlignment.Left
 titleLbl.Font = Enum.Font.GothamBold
@@ -308,26 +322,56 @@ listPad.PaddingLeft = UDim.new(0, 4)
 listPad.PaddingRight = UDim.new(0, 4)
 listPad.Parent = listFrame
 
--- === Bottom Bar ===
+-- === Bottom Bar (2 baris) ===
+local BOTTOM_Y = LIST_Y + LIST_H + 8
 local btnRow = Instance.new("Frame")
-btnRow.Size = UDim2.new(1, -20, 0, 28)
-btnRow.Position = UDim2.new(0, 10, 0, LIST_Y + LIST_H + 8)
+btnRow.Size = UDim2.new(1, -20, 0, 58)
+btnRow.Position = UDim2.new(0, 10, 0, BOTTOM_Y)
 btnRow.BackgroundTransparency = 1
 btnRow.Parent = main
 
+-- --- baris atas: Clear + FavAll + UnfavAll ---
+local topBtnRow = Instance.new("Frame")
+topBtnRow.Size = UDim2.new(1, 0, 0, 26)
+topBtnRow.BackgroundTransparency = 1
+topBtnRow.Parent = btnRow
+
 local clearBtn = Instance.new("TextButton")
-clearBtn.Size = UDim2.new(0, 56, 1, 0)
+clearBtn.Size = UDim2.new(0, 52, 1, 0)
 clearBtn.BackgroundColor3 = C_ROW
 clearBtn.Text = "🗑"
 clearBtn.TextColor3 = C_TEXT
 clearBtn.Font = Enum.Font.GothamBold
 clearBtn.TextSize = 12
-clearBtn.Parent = btnRow
+clearBtn.Parent = topBtnRow
 local clc = Instance.new("UICorner"); clc.CornerRadius = UDim.new(0, 8); clc.Parent = clearBtn
 
+local favAllBtn = Instance.new("TextButton")
+favAllBtn.Size = UDim2.new(0, 96, 1, 0)
+favAllBtn.Position = UDim2.new(0, 58, 0, 0)
+favAllBtn.BackgroundColor3 = Color3.fromRGB(60, 130, 90)
+favAllBtn.Text = "⭐ Fav All"
+favAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+favAllBtn.Font = Enum.Font.GothamBold
+favAllBtn.TextSize = 10
+favAllBtn.Parent = topBtnRow
+local fabc = Instance.new("UICorner"); fabc.CornerRadius = UDim.new(0, 8); fabc.Parent = favAllBtn
+
+local unfavAllBtn = Instance.new("TextButton")
+unfavAllBtn.Size = UDim2.new(1, -160, 1, 0)
+unfavAllBtn.Position = UDim2.new(0, 160, 0, 0)
+unfavAllBtn.BackgroundColor3 = Color3.fromRGB(120, 80, 80)
+unfavAllBtn.Text = "☆ Unfav All"
+unfavAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+unfavAllBtn.Font = Enum.Font.GothamBold
+unfavAllBtn.TextSize = 10
+unfavAllBtn.Parent = topBtnRow
+local uabc = Instance.new("UICorner"); uabc.CornerRadius = UDim.new(0, 8); uabc.Parent = unfavAllBtn
+
+-- --- baris bawah: Send ---
 local sendBtn = Instance.new("TextButton")
-sendBtn.Size = UDim2.new(1, -62, 1, 0)
-sendBtn.Position = UDim2.new(0, 62, 0, 0)
+sendBtn.Size = UDim2.new(1, 0, 0, 26)
+sendBtn.Position = UDim2.new(0, 0, 0, 30)
 sendBtn.BackgroundColor3 = C_GREEN
 sendBtn.Text = "🔥 SEND"
 sendBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -344,10 +388,9 @@ local targetName   = nil
 local rowRefs      = {}
 local query        = ""
 
--- fav fingerprint untuk deteksi perubahan
-local favFingerprint = ""    -- string gabungan uuid:isFav
-local favWatchers    = {}    -- uuid -> connection (attribute changed)
-local backpackConn   = nil   -- child added/removed
+local favFingerprint = ""
+local favWatchers    = {}
+local backpackConn   = nil
 local currentBackpack = nil
 
 -- ============ HELPERS ============
@@ -401,7 +444,6 @@ local function styleRow(row, actionBtn, isEntry)
     end
 end
 
--- fingerprint semua fav state, dipakai untuk cek perubahan cepat
 local function computeFavFingerprint(items)
     local t = {}
     for _, e in ipairs(items) do
@@ -411,9 +453,9 @@ local function computeFavFingerprint(items)
     return table.concat(t, "|")
 end
 
--- pasang watcher attribute IsFavorite di tiap item
+local onFavChanged -- forward decl
+
 local function attachFavWatchers(items)
-    -- lepas watcher lama
     for uuid, conn in pairs(favWatchers) do
         if conn then conn:Disconnect() end
     end
@@ -432,7 +474,6 @@ local function attachFavWatchers(items)
         end
         if inst then
             local conn = inst:GetAttributeChangedSignal("IsFavorite"):Connect(function()
-                -- trigger refresh visual tanpa full rebuild
                 onFavChanged(inst)
             end)
             favWatchers[e.uuid] = conn
@@ -440,7 +481,6 @@ local function attachFavWatchers(items)
     end
 end
 
--- callback saat fav berubah (via signal attribute)
 function onFavChanged(inst)
     local uuid = inst:GetAttribute("Id")
     if not uuid then return end
@@ -449,19 +489,15 @@ function onFavChanged(inst)
 
     local newFav = inst:GetAttribute("IsFavorite") == true
 
-    -- update attribute cache di row
     if ref.row and ref.row.Parent then
         ref.row:SetAttribute("IsFav", newFav)
-        -- kalau row tidak sedang "selected" (masuk mail), update warna
         if not entries[uuid] then
             ref.row.BackgroundColor3 = newFav and C_ROW_FAV or C_ROW
         end
     end
 
-    -- update counter fav di info bar
     local favTotal = 0
     for _, it in ipairs(currentItems) do
-        -- sinkron dari backpack attribute real-time
         if it.uuid == uuid then it.isFav = newFav end
         if it.isFav then favTotal += 1 end
     end
@@ -521,7 +557,6 @@ local function rebuildList()
         star.Text = e.isFav and "⭐" or ""
         star.TextSize = 9
         star.Parent = row
-        row:SetAttribute("StarText", e.isFav and "⭐" or "")
 
         local nameLbl = Instance.new("TextLabel")
         nameLbl.Size = UDim2.new(1, -52, 1, 0)
@@ -586,11 +621,7 @@ local function rebuildList()
     end
 
     updateCounter(favTotal)
-
-    -- pasang watcher fav
     attachFavWatchers(currentItems)
-
-    -- simpan fingerprint
     favFingerprint = computeFavFingerprint(currentItems)
 
     task.defer(function()
@@ -665,6 +696,144 @@ sendBtn.MouseButton1Click:Connect(function()
     end
 end)
 
+-- ============ FAV ALL / UNFAV ALL ============
+local function bulkFav(isFav)
+    local items = scanBackpack()
+    if #items == 0 then
+        setStatus("❌ backpack kosong", C_RED)
+        return
+    end
+
+    local targets = {}
+    for _, e in ipairs(items) do
+        if e.isFav ~= isFav then
+            table.insert(targets, e)
+        end
+    end
+
+    if #targets == 0 then
+        setStatus(isFav and "✅ semua udah fav" or "✅ semua udah unfav", C_SUB)
+        return
+    end
+
+    setStatus(string.format("⏳ %s %d item…",
+        isFav and "favoriting" or "unfavoriting", #targets),
+        Color3.fromRGB(255, 200, 100))
+
+    task.spawn(function()
+        local okCount, failCount = 0, 0
+        for _, e in ipairs(targets) do
+            local ok, err = pcall(function()
+                if isFav then favoriteFruit(e.uuid) else unfavoriteFruit(e.uuid) end
+            end)
+            if ok then
+                okCount += 1
+            else
+                failCount += 1
+                warn("[bulkFav] gagal " .. e.name .. ": " .. tostring(err))
+            end
+            task.wait(BULK_DELAY)
+        end
+
+        setStatus(string.format("%s %d ok • %d gagal",
+            isFav and "⭐ fav'd" or "☆ unfav'd", okCount, failCount),
+            failCount == 0 and Color3.fromRGB(150, 255, 170) or C_RED)
+
+        task.wait(0.3)
+        rebuildList()
+    end)
+end
+
+favAllBtn.MouseButton1Click:Connect(function()
+    bulkFav(true)
+end)
+
+-- ============ CONFIRM POPUP untuk UNFAV ALL ============
+local confirmGui = Instance.new("ScreenGui")
+confirmGui.Name = "FruitMailConfirm"
+confirmGui.ResetOnSpawn = false
+confirmGui.IgnoreGuiInset = true
+confirmGui.DisplayOrder = 1000
+confirmGui.Enabled = false
+confirmGui.Parent = CoreGui
+
+local overlay = Instance.new("Frame")
+overlay.Size = UDim2.new(1, 0, 1, 0)
+overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+overlay.BackgroundTransparency = 0.45
+overlay.BorderSizePixel = 0
+overlay.Parent = confirmGui
+
+local dialog = Instance.new("Frame")
+dialog.Size = UDim2.new(0, 260, 0, 160)
+dialog.Position = UDim2.new(0.5, -130, 0.5, -80)
+dialog.BackgroundColor3 = C_BG
+dialog.BorderSizePixel = 0
+dialog.Parent = overlay
+local dc = Instance.new("UICorner"); dc.CornerRadius = UDim.new(0, 12); dc.Parent = dialog
+local ds = Instance.new("UIStroke"); ds.Color = C_RED; ds.Thickness = 1; ds.Parent = dialog
+
+local dTitle = Instance.new("TextLabel")
+dTitle.Size = UDim2.new(1, -20, 0, 26)
+dTitle.Position = UDim2.new(0, 10, 0, 8)
+dTitle.BackgroundTransparency = 1
+dTitle.Text = "⚠ PERINGATAN"
+dTitle.TextColor3 = C_RED
+dTitle.Font = Enum.Font.GothamBold
+dTitle.TextSize = 13
+dTitle.TextXAlignment = Enum.TextXAlignment.Center
+dTitle.Parent = dialog
+
+local dMsg = Instance.new("TextLabel")
+dMsg.Size = UDim2.new(1, -24, 0, 70)
+dMsg.Position = UDim2.new(0, 12, 0, 38)
+dMsg.BackgroundTransparency = 1
+dMsg.Text = "Unfav All akan mematikan status favorite SEMUA buah.\n\n" ..
+            "🔴 Matikan dulu script AUTO SELL sebelum lanjut,\n" ..
+            "supaya buah tidak ikut terjual."
+dMsg.TextColor3 = C_TEXT
+dMsg.Font = Enum.Font.Gotham
+dMsg.TextSize = 10
+dMsg.TextWrapped = true
+dMsg.TextYAlignment = Enum.TextYAlignment.Top
+dMsg.Parent = dialog
+
+local confirmBtn = Instance.new("TextButton")
+confirmBtn.Size = UDim2.new(0, 110, 0, 28)
+confirmBtn.Position = UDim2.new(0, 14, 1, -38)
+confirmBtn.BackgroundColor3 = C_RED
+confirmBtn.Text = "✅ CONFIRM"
+confirmBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+confirmBtn.Font = Enum.Font.GothamBold
+confirmBtn.TextSize = 11
+confirmBtn.Parent = dialog
+local cfc = Instance.new("UICorner"); cfc.CornerRadius = UDim.new(0, 8); cfc.Parent = confirmBtn
+
+local returnBtn = Instance.new("TextButton")
+returnBtn.Size = UDim2.new(0, 110, 0, 28)
+returnBtn.Position = UDim2.new(1, -124, 1, -38)
+returnBtn.BackgroundColor3 = C_ROW
+returnBtn.Text = "↩ RETURN"
+returnBtn.TextColor3 = C_TEXT
+returnBtn.Font = Enum.Font.GothamBold
+returnBtn.TextSize = 11
+returnBtn.Parent = dialog
+local rbc = Instance.new("UICorner"); rbc.CornerRadius = UDim.new(0, 8); rbc.Parent = returnBtn
+
+returnBtn.MouseButton1Click:Connect(function()
+    confirmGui.Enabled = false
+    setStatus("↩ unfav all dibatalkan", C_SUB)
+end)
+
+confirmBtn.MouseButton1Click:Connect(function()
+    confirmGui.Enabled = false
+    bulkFav(false)
+end)
+
+unfavAllBtn.MouseButton1Click:Connect(function()
+    confirmGui.Enabled = true
+end)
+
 -- ============ INIT ============
 rebuildList()
 
@@ -679,8 +848,6 @@ task.spawn(function()
 end)
 
 -- ============ AUTO REFRESH ============
-
--- 1) Watch backpack untuk item baru / item hilang
 local function hookBackpack()
     local backpack = LocalPlayer:FindFirstChild("Backpack")
     if not backpack then return end
@@ -692,12 +859,9 @@ local function hookBackpack()
     backpackConn = backpack.ChildAdded:Connect(function(child)
         if child:GetAttribute("Id") then
             task.wait(0.1)
-            -- cek fav fingerprint dulu; kalau baru, rebuild
             rebuildList()
         end
     end)
-
-    -- ChildRemoved tidak perlu full rebuild — pruning rutin di loop
 end
 
 hookBackpack()
@@ -709,7 +873,6 @@ LocalPlayer.ChildAdded:Connect(function(child)
     end
 end)
 
--- 2) Loop utama: cek fav fingerprint + prune item hilang
 task.spawn(function()
     while gui.Parent do
         task.wait(REFRESH_RATE)
@@ -719,15 +882,12 @@ task.spawn(function()
 
         local backpack = LocalPlayer:FindFirstChild("Backpack")
         if backpack then
-            -- cek fav fingerprint
             local snapshot = scanBackpack()
             local newFp = computeFavFingerprint(snapshot)
 
             if newFp ~= favFingerprint then
-                -- ada perubahan fav atau item → rebuild
                 rebuildList()
             else
-                -- fallback: cek pruning manual
                 local live = {}
                 for _, item in ipairs(backpack:GetChildren()) do
                     local uuid = item:GetAttribute("Id")
@@ -752,4 +912,4 @@ task.spawn(function()
     end
 end)
 
-print("✅ Fruit Mail Builder v9 (auto refresh on fav) loaded")
+print("✅ Fruit Mail Builder v10 (Fav All / Unfav All + Confirm) loaded")
