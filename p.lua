@@ -1,19 +1,17 @@
 -- ============================================
--- ALL-IN-ONE: AUTO BUY + GARDEN SHIELD + AUTO HARVEST/MAIL
+-- ALL-IN-ONE: AUTO BUY + GARDEN SHIELD + AUTO HARVEST
 -- ============================================
 -- FITUR:
 --   [AUTO BUY]    Gear + Seed + Crate → langsung aktif (tanpa toggle)
 --   [SHIELD]      Weld ke lantai + auto-return ke garden (toggle)
 --   [HARVEST]     Auto panen + filter berat/mutasi (toggle)
 --   [AUTO SELL]   Jual otomatis (toggle)
---   [AUTO MAIL]   Kirim 15 Bloodlit >150kg fav (toggle)
 -- ============================================
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CoreGui           = game:GetService("CoreGui")
 local UserInputService  = game:GetService("UserInputService")
-local HttpService       = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 
@@ -247,7 +245,7 @@ task.spawn(function()
 end)
 
 -- ==================================================================
--- BAGIAN 3: AUTO HARVEST + PRIORITY FARM + AUTO MAIL
+-- BAGIAN 3: AUTO HARVEST + PRIORITY FARM
 -- ==================================================================
 
 local ROOT = workspace:WaitForChild("Gardens", 30)
@@ -260,15 +258,6 @@ local CONFIG = {
 	AUTO_SELL_INTERVAL  = 3,
 	AUTO_DELAY          = 0.25,
 	ONLY_MY_PLOTS       = true,
-
-	MAIL_ENABLED        = true,   -- default OFF (kirim ke orang lain)
-	MAIL_TARGET_USER    = "Andri21649",
-	MAIL_TARGET_ID      = nil,
-	MAIL_TRIGGER_MUT    = "Bloodlit",
-	MAIL_TRIGGER_WEIGHT = 150,
-	MAIL_TRIGGER_COUNT  = 15,
-	MAIL_CATEGORY       = "HarvestedFruits",
-	MAIL_CHECK_INTERVAL = 5,
 }
 
 local WEIGHT_K = 9
@@ -279,11 +268,9 @@ local CHEAP_MUTATIONS = {
 
 local SELL_PAYLOAD = "\015\001\018"
 local FAV_PREFIX   = "\179\0004$"
-local UNFAV_PREFIX = "\179\0006$"
 
 local ALIVE          = true
 local isPriorityBusy = false
-local isMailBusy     = false
 local MY_PLOT_NAME   = nil
 
 local function isMyPlot(plot)
@@ -395,90 +382,6 @@ local function favoriteFruit(uuid)
 	return pcall(function() Packet:FireServer(buffer.fromstring(payload)) end)
 end
 
-local function unfavoriteFruit(uuid)
-	if not ALIVE or not uuid then return false end
-	local payload = UNFAV_PREFIX .. uuid .. "\000"
-	return pcall(function() Packet:FireServer(buffer.fromstring(payload)) end)
-end
-
-local function resolveUsername(username)
-	local ok, userId = pcall(function()
-		return Players:GetUserIdFromNameAsync(username)
-	end)
-	if ok and userId then return userId end
-	local ok2, response = pcall(function()
-		return request({
-			Url = "https://users.roblox.com/v1/usernames/users",
-			Method = "POST",
-			Headers = { ["Content-Type"] = "application/json" },
-			Body = HttpService:JSONEncode({
-				usernames = { username },
-				excludeBannedUsers = false
-			})
-		})
-	end)
-	if ok2 and response and response.Body then
-		local data = HttpService:JSONDecode(response.Body)
-		if data.data and data.data[1] then return data.data[1].id end
-	end
-	return nil
-end
-
-local function buildMultiEntryPayload(targetUserId, entries)
-	local CATEGORY = CONFIG.MAIL_CATEGORY
-	local needed = 16
-	for _, e in ipairs(entries) do
-		needed = needed + 3
-			+ (2 + #"ItemKey") + (2 + #e.uuid)
-			+ (2 + #"Count")   + 3
-			+ (2 + #"Category")+ (2 + #CATEGORY)
-			+ 1
-	end
-	needed = needed + 4
-
-	local buf = buffer.create(needed)
-	local pos = 0
-	buffer.writeu8(buf, pos, 0x8C); pos += 1
-	buffer.writeu8(buf, pos, 0x01); pos += 1
-	buffer.writeu8(buf, pos, 0x69); pos += 1
-	buffer.writef64(buf, pos, targetUserId); pos += 8
-	buffer.writeu8(buf, pos, 0x1C); pos += 1
-
-	local function writeString(s)
-		buffer.writeu8(buf, pos, 0x0B); pos += 1
-		buffer.writeu8(buf, pos, #s);  pos += 1
-		for i = 1, #s do
-			buffer.writeu8(buf, pos, string.byte(s, i)); pos += 1
-		end
-	end
-	local function writeInt(n)
-		buffer.writeu8(buf, pos, 0x05); pos += 1
-		buffer.writeu8(buf, pos, n % 256); pos += 1
-	end
-	for i, entry in ipairs(entries) do
-		buffer.writeu8(buf, pos, 0x05); pos += 1
-		buffer.writeu8(buf, pos, i % 256); pos += 1
-		buffer.writeu8(buf, pos, 0x1C); pos += 1
-		writeString("ItemKey");  writeString(entry.uuid)
-		writeString("Count");    writeInt(entry.count or 1)
-		writeString("Category"); writeString(CATEGORY)
-		buffer.writeu8(buf, pos, 0x00); pos += 1
-	end
-	buffer.writeu8(buf, pos, 0x00); pos += 1
-	buffer.writeu8(buf, pos, 0x00); pos += 1
-	buffer.writeu8(buf, pos, 0x00); pos += 1
-
-	local final = buffer.create(pos)
-	buffer.copy(final, 0, buf, 0, pos)
-	return final
-end
-
-local function sendMail(targetUserId, entries)
-	if not ALIVE or not targetUserId or #entries == 0 then return false end
-	local payload = buildMultiEntryPayload(targetUserId, entries)
-	return pcall(function() Packet:FireServer(payload) end)
-end
-
 local function getBackpackUUIDs()
 	local uuids = {}
 	local backpack = player:FindFirstChild("Backpack")
@@ -507,28 +410,6 @@ local function getNewBackpackTools(beforeUUIDs)
 		end
 	end
 	return newTools
-end
-
-local function getMailCandidates()
-	local list = {}
-	local backpack = player:FindFirstChild("Backpack")
-	if not backpack then return list end
-	local targetMut = CONFIG.MAIL_TRIGGER_MUT:lower()
-	for _, item in ipairs(backpack:GetChildren()) do
-		local uuid  = item:GetAttribute("Id")
-		local isFav = item:GetAttribute("IsFavorite")
-		local w     = item:GetAttribute("Weight")
-		local mut   = item:GetAttribute("Mutation")
-		if uuid and isFav == true and w and mut then
-			if w > CONFIG.MAIL_TRIGGER_WEIGHT and tostring(mut):lower() == targetMut then
-				table.insert(list, {
-					tool = item, uuid = uuid, name = item.Name,
-					weight = w, mutation = mut,
-				})
-			end
-		end
-	end
-	return list
 end
 
 local function isNormalHarvest(e)
@@ -589,7 +470,7 @@ local function getAllFruits()
 end
 
 local function doPriorityFarm()
-	if isPriorityBusy or isMailBusy then return end
+	if isPriorityBusy then return end
 	isPriorityBusy = true
 	print("")
 	print("🌟 ═══ PRIORITY FARM ═══")
@@ -597,7 +478,7 @@ local function doPriorityFarm()
 	CONFIG.AUTO_SELL_ENABLED = false
 	task.wait(0.3)
 	local totalSaved, totalSold, round = 0, 0, 0
-	while ALIVE and not isMailBusy and round < 10 do
+	while ALIVE and round < 10 do
 		round = round + 1
 		local entries = getAllFruits()
 		local saveTargets, sellTargets = {}, {}
@@ -616,14 +497,14 @@ local function doPriorityFarm()
 		for _, t in ipairs(saveTargets) do table.insert(allTargets, t) end
 		for _, t in ipairs(sellTargets) do table.insert(allTargets, t) end
 		for _, t in ipairs(allTargets) do
-			if not ALIVE or isMailBusy then break end
+			if not ALIVE then break end
 			harvest(t.plant, t.fruit)
 			task.wait(0.15)
 		end
 		task.wait(0.8)
 		local newTools = getNewBackpackTools(beforeUUIDs)
 		for _, t in ipairs(newTools) do
-			if not ALIVE or isMailBusy then break end
+			if not ALIVE then break end
 			local w, mut = t.weight or 0, t.mutation
 			local isCheap = isCheapMutation(mut)
 			if w > CONFIG.SAVE_WEIGHT and not isCheap then
@@ -637,99 +518,16 @@ local function doPriorityFarm()
 			end
 			task.wait(0.15)
 		end
-		if #newTools > 0 and not isMailBusy then
+		if #newTools > 0 then
 			task.wait(0.5); sellBackpack()
 		end
 		task.wait(0.3)
 	end
 	print(string.format("🌟 Total: %d saved, %d sold", totalSaved, totalSold))
-	if prevSell and not isMailBusy then CONFIG.AUTO_SELL_ENABLED = true end
+	if prevSell then CONFIG.AUTO_SELL_ENABLED = true end
 	print("🌟 ═══════════════════════")
 	print("")
 	isPriorityBusy = false
-end
-
-local function doMailMode()
-	if isMailBusy then return end
-	isMailBusy = true
-	print("")
-	print("📬 ═══ AUTO MAIL MODE ═══")
-	local prevAuto = CONFIG.AUTO_ENABLED
-	local prevSell = CONFIG.AUTO_SELL_ENABLED
-	CONFIG.AUTO_ENABLED      = false
-	CONFIG.AUTO_SELL_ENABLED = false
-
-	if not CONFIG.MAIL_TARGET_ID then
-		print("📬 Resolving target:", CONFIG.MAIL_TARGET_USER)
-		local id = resolveUsername(CONFIG.MAIL_TARGET_USER)
-		if id then
-			CONFIG.MAIL_TARGET_ID = id
-			print("📬 ✅ Target ID:", id)
-		else
-			print("📬 ❌ Gagal resolve. Dibatalkan.")
-			CONFIG.AUTO_ENABLED      = prevAuto
-			CONFIG.AUTO_SELL_ENABLED = prevSell
-			isMailBusy = false
-			return
-		end
-	end
-
-	-- Guard: jangan kirim ke diri sendiri
-	if CONFIG.MAIL_TARGET_ID == player.UserId then
-		warn("📬 ❌ Target == LocalPlayer. Dibatalkan.")
-		CONFIG.AUTO_ENABLED      = prevAuto
-		CONFIG.AUTO_SELL_ENABLED = prevSell
-		isMailBusy = false
-		return
-	end
-
-	task.wait(0.3)
-	local candidates = getMailCandidates()
-	print(string.format("📬 Kandidat: %d (butuh %d)", #candidates, CONFIG.MAIL_TRIGGER_COUNT))
-	if #candidates < CONFIG.MAIL_TRIGGER_COUNT then
-		print("📬 ❌ Kandidat kurang. Dibatalkan.")
-		CONFIG.AUTO_ENABLED      = prevAuto
-		CONFIG.AUTO_SELL_ENABLED = prevSell
-		isMailBusy = false
-		return
-	end
-
-	table.sort(candidates, function(a, b) return (a.weight or 0) > (b.weight or 0) end)
-	local picked = {}
-	for i = 1, CONFIG.MAIL_TRIGGER_COUNT do table.insert(picked, candidates[i]) end
-
-	print("📬 Unfavorite 15 buah...")
-	for _, t in ipairs(picked) do
-		if not ALIVE then break end
-		unfavoriteFruit(t.uuid)
-		task.wait(0.15)
-	end
-	task.wait(1)
-
-	local mailEntries = {}
-	for _, t in ipairs(picked) do
-		table.insert(mailEntries, { uuid = t.uuid, count = 1, name = t.name })
-	end
-
-	print(string.format("📬 Kirim %d item → %s (ID %d)",
-		#mailEntries, CONFIG.MAIL_TARGET_USER, CONFIG.MAIL_TARGET_ID))
-	if sendMail(CONFIG.MAIL_TARGET_ID, mailEntries) then
-		print("📬 ✅ Mail terkirim!")
-		if mailStatusLbl then
-			mailStatusLbl.Text = string.format("📬 ✅ sent %d → %s",
-				#mailEntries, CONFIG.MAIL_TARGET_USER)
-			mailStatusLbl.TextColor3 = Color3.fromRGB(150, 255, 150)
-		end
-	else
-		print("📬 ❌ Gagal kirim mail.")
-	end
-	task.wait(1)
-
-	CONFIG.AUTO_ENABLED      = prevAuto
-	CONFIG.AUTO_SELL_ENABLED = prevSell
-	print("📬 ═══ SELESAI ═══")
-	print("")
-	isMailBusy = false
 end
 
 -- Harvest loop
@@ -737,7 +535,7 @@ task.spawn(function()
 	while ALIVE do
 		task.wait(CONFIG.AUTO_DELAY)
 		if not ALIVE then break end
-		if isPriorityBusy or isMailBusy then continue end
+		if isPriorityBusy then continue end
 		if CONFIG.AUTO_ENABLED and getMyPlot() then
 			local entries = getAllFruits()
 			local hasPriority = false
@@ -748,7 +546,7 @@ task.spawn(function()
 				task.spawn(doPriorityFarm)
 			else
 				for _, e in ipairs(entries) do
-					if not ALIVE or isPriorityBusy or isMailBusy then break end
+					if not ALIVE or isPriorityBusy then break end
 					if not CONFIG.AUTO_ENABLED then break end
 					if isNormalHarvest(e) then
 						harvest(e.plant, e.fruit)
@@ -765,31 +563,8 @@ task.spawn(function()
 	while ALIVE do
 		task.wait(CONFIG.AUTO_SELL_INTERVAL)
 		if not ALIVE then break end
-		if isPriorityBusy or isMailBusy then continue end
+		if isPriorityBusy then continue end
 		if CONFIG.AUTO_SELL_ENABLED then sellBackpack() end
-	end
-end)
-
--- Mail check loop
-task.spawn(function()
-	while ALIVE do
-		task.wait(CONFIG.MAIL_CHECK_INTERVAL)
-		if not ALIVE then break end
-		if isMailBusy or isPriorityBusy then continue end
-		if not CONFIG.MAIL_ENABLED then continue end
-		local candidates = getMailCandidates()
-		local n = #candidates
-		if mailStatusLbl then
-			mailStatusLbl.Text = string.format("📬 %d/%d Bloodlit >150kg fav",
-				n, CONFIG.MAIL_TRIGGER_COUNT)
-			mailStatusLbl.TextColor3 = (n >= CONFIG.MAIL_TRIGGER_COUNT)
-				and Color3.fromRGB(150, 255, 150)
-				or Color3.fromRGB(180, 200, 255)
-		end
-		if n >= CONFIG.MAIL_TRIGGER_COUNT then
-			print(string.format("📬 Trigger! %d Bloodlit", n))
-			task.spawn(doMailMode)
-		end
 	end
 end)
 
@@ -806,7 +581,7 @@ gui.ResetOnSpawn = false
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = CoreGui
 
-local FULL_H = 210
+local FULL_H = 178
 local MINI_H = 28
 
 local main = Instance.new("Frame")
@@ -1007,31 +782,11 @@ makeSliderToggle(body, "💰 Auto Sell", 90,
 		print("💰 Auto Sell " .. (v and "ON" or "OFF"))
 	end
 )
-makeSliderToggle(body, "📬 Auto Mail", 112,
-	function() return CONFIG.MAIL_ENABLED end,
-	function(v)
-		CONFIG.MAIL_ENABLED = v
-		print("📬 Auto Mail " .. (v and "ON" or "OFF"))
-	end
-)
-
--- Mail status label (dideklarasikan global supaya bisa diakses loop mail)
-mailStatusLbl = Instance.new("TextLabel")
-mailStatusLbl.Size = UDim2.new(1, -20, 0, 14)
-mailStatusLbl.Position = UDim2.new(0, 10, 0, 134)
-mailStatusLbl.BackgroundTransparency = 1
-mailStatusLbl.Text = "📬 target: -"
-mailStatusLbl.TextColor3 = Color3.fromRGB(180, 200, 255)
-mailStatusLbl.Font = Enum.Font.Gotham
-mailStatusLbl.TextSize = 9
-mailStatusLbl.TextXAlignment = Enum.TextXAlignment.Left
-mailStatusLbl.TextTruncate = Enum.TextTruncate.AtEnd
-mailStatusLbl.Parent = body
 
 -- Info box
 local infoLbl = Instance.new("TextLabel")
 infoLbl.Size = UDim2.new(1, -20, 0, 26)
-infoLbl.Position = UDim2.new(0, 10, 0, 152)
+infoLbl.Position = UDim2.new(0, 10, 0, 120)
 infoLbl.BackgroundTransparency = 1
 infoLbl.Text = "⚙️ Auto Buy: ON (background)\n🛡️ Shield & 🌾 Harvest manual"
 infoLbl.TextColor3 = Color3.fromRGB(130, 150, 200)
@@ -1054,28 +809,19 @@ closeBtn.MouseButton1Click:Connect(function()
 	ALIVE = false
 	CONFIG.AUTO_ENABLED = false
 	CONFIG.AUTO_SELL_ENABLED = false
-	CONFIG.MAIL_ENABLED = false
 	isShieldRunning = false
 	if gui then gui:Destroy() end
 	print("🛑 Semua fitur dimatikan. Script stopped.")
 end)
 
--- ==================================================================
--- INIT / BACKGROUND TASK
--- ==================================================================
-
-task.spawn(function()
-	local id = resolveUsername(CONFIG.MAIL_TARGET_USER)
-	if id then
-		CONFIG.MAIL_TARGET_ID = id
-		if mailStatusLbl then
-			mailStatusLbl.Text = string.format("📬 target: %s (%d)",
-				CONFIG.MAIL_TARGET_USER, id)
-		end
-		print("📬 Target ID resolved:", id)
-	end
-end)
-
 Players.PlayerRemoving:Connect(function(p)
 	if p == player then ALIVE = false end
 end)
+
+print("=====================================")
+print("✅ ALL-IN-ONE LOADED (no mail)")
+print("   Auto Buy   : ON (background)")
+print("   Shield      : OFF (toggle)")
+print("   Auto Panen  : OFF (toggle)")
+print("   Auto Sell   : OFF (toggle)")
+print("=====================================")
