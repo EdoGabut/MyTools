@@ -49,14 +49,14 @@ local ALIVE = true
 -- ==================================================================
 
 local TARGETS = {
-	{ name = "Cider Watering Can",       threshold = 300, label = "CWC"  },  -- 5 menit
+	{ name = "Cider Watering Can",       threshold = 180, label = "CWC"  },  -- 5 menit
 	{ name = "Spirit Mushroom",          threshold = 60,  label = "SM"   },
-	{ name = "Super Cider Watering Can", threshold = 35,  label = "SCWC" },
-	{ name = "Super Cider Sprinkler",    threshold = 25,  label = "SCS"  },
+	{ name = "Super Cider Watering Can", threshold = 20,  label = "SCWC" },
+	{ name = "Super Cider Sprinkler",    threshold = 20,  label = "SCS"  },
 }
 
 local MONEY_LOT_COUNT    = 6
-local AUTO_FIRE_INTERVAL = 5
+local AUTO_FIRE_INTERVAL = 6
 local OFFSCREEN_OFFSET   = 5000
 
 local AUCTION_PATH       = string.format("game.Players.%s.PlayerGui.Auction", LP.Name)
