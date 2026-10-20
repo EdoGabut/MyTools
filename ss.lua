@@ -1,310 +1,498 @@
--- LocalScript: Auto Buy Gear + Seeds + Crates (Log Only)
+-- ============================================================
+-- Auto Buy All — Minimalis
+-- - 1 toggle ON/OFF buat semua shop
+-- - Scan Seed + Gear + Crate
+-- - Cuma tampil item yang ada stock
+-- - Loop cepat (0.1s)
+-- ============================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 
--- ===== REMOTE =====
 local remote = ReplicatedStorage:WaitForChild("SharedModules")
-	:WaitForChild("Packet"):WaitForChild("RemoteEvent")
+    :WaitForChild("Packet"):WaitForChild("RemoteEvent")
 
--- ===== DATA =====
-local GEAR_LIST = {
-	"Cider Watering Can",
-	"Super Cider Watering Can",
-	"Common Cider Sprinkler",
-	"Uncommon Cider Sprinkler",
-	"Rare Cider Sprinkler",
-	"Legendary Cider Sprinkler",
-	"Super Cider Sprinkler",
-	"Rare Magic Mail",
-	"Legendary Magic Mail",
-	"Super Magic Mail",
-	"Candy Basket",
-	"Cauldron Charm",
-	"Bat Charm",
-	"Trowel",
+-- ===== CONFIG =====
+local BUY_INTERVAL = 0.5        -- ← LEBIH CEPET dari 0.5
+local SCAN_INTERVAL = 1         -- ← REFRESH GUI lebih sering
+
+local SHOPS = {
+    {
+        name = "Seed",
+        base = "game.Players.LocalPlayer.PlayerGui.SeedShop.Frame.NormalShop",
+        opcode1 = 0xB8,
+        opcode2 = 0x00,
+        color = Color3.fromRGB(80, 200, 120),
+        icon = "🌱",
+    },
+    {
+        name = "Gear",
+        base = "game.Players.LocalPlayer.PlayerGui.GearShop.Frame.ScrollingFrame",
+        opcode1 = 0xCE,
+        opcode2 = 0x00,
+        color = Color3.fromRGB(96, 140, 230),
+        icon = "💧",
+    },
+    {
+        name = "Crate",
+        base = "game.Players.LocalPlayer.PlayerGui.CrateShop.Frame.ScrollingFrame",
+        opcode1 = 0xCC,
+        opcode2 = 0x00,
+        color = Color3.fromRGB(220, 160, 80),
+        icon = "📦",
+    },
 }
-
-local SEED_LIST = {
-	"Spirit Venom Spitter",
-	"Spirit Venus Fly Trap",
-	"Spirit Carrot",
-	"Spirit Tulip",
-	"Great Pumpkin",
-	"Vampire Bloom",
-}
-
-local CRATE_LIST = {
-	"Gravestone Crate",
-	"Halloween Prop Crate",
-	"Fog Machine Crate",
-}
-
--- ===== PAYLOAD =====
-local function buildGearPayload(name)
-	local len = #name
-	if len > 255 then return nil end
-	return buffer.fromstring("\206\000" .. string.char(len) .. name)
-end
-
-local function buildSeedPayload(name)
-	local len = #name
-	if len > 255 then return nil end
-	return buffer.fromstring("\184\000" .. string.char(len) .. name)
-end
-
-local function buildCratePayload(name)
-	local len = #name
-	if len > 255 then return nil end
-	return buffer.fromstring("\204\000" .. string.char(len) .. name)
-end
-
--- ===== PATH =====
-local GEAR_BASE  = "game.Players.LocalPlayer.PlayerGui.GearShop.Frame.ScrollingFrame"
-local SEED_BASE  = "game.Players.LocalPlayer.PlayerGui.SeedShop.Frame.NormalShop"
-local CRATE_BASE = "game.Players.LocalPlayer.PlayerGui.CrateShop.Frame.ScrollingFrame"
-
-local function getGearStockPath(name)
-	return GEAR_BASE .. "." .. name .. ".Main_Frame.Stock_Text"
-end
-
-local function getSeedStockPath(name)
-	return SEED_BASE .. "." .. name .. ".Main_Frame.Stock_Text"
-end
-
-local function getCrateStockPath(name)
-	return CRATE_BASE .. "." .. name .. ".Main_Frame.Stock_Text"
-end
 
 -- ===== HELPERS =====
 local function resolvePath(pathStr)
-	if not pathStr or pathStr == "" then return nil end
-	pathStr = pathStr:gsub("^%s+", ""):gsub("%s+$", "")
-	local segments = {}
-	for seg in pathStr:gmatch("[^%.]+") do
-		table.insert(segments, seg)
-	end
-	if #segments == 0 then return nil end
-	local node = game
-	if segments[1] == "game" then table.remove(segments, 1) end
-	for _, seg in ipairs(segments) do
-		if not node then return nil end
-		if seg == "LocalPlayer" then
-			node = player
-		else
-			node = node:FindFirstChild(seg)
-		end
-	end
-	return node
+    local segments = {}
+    for seg in pathStr:gmatch("[^%.]+") do
+        table.insert(segments, seg)
+    end
+    if #segments == 0 then return nil end
+
+    local node = game
+    if segments[1] == "game" then table.remove(segments, 1) end
+
+    for _, seg in ipairs(segments) do
+        if not node then return nil end
+        if seg == "LocalPlayer" then
+            node = player
+        else
+            node = node:FindFirstChild(seg)
+        end
+    end
+    return node
 end
 
 local function parseStock(label)
-	if not label or not label.Text then return nil end
-	return tonumber(label.Text:match("[xX](%d+)")) or tonumber(label.Text:match("(%d+)"))
+    if not label or not label.Text then return nil end
+    return tonumber(label.Text:match("[xX](%d+)")) or tonumber(label.Text:match("(%d+)"))
 end
 
-local function logBought(kind, name, stockBefore)
-	print(string.format("[BUY] %s | %s | stok terakhir: %d", kind, name, stockBefore))
+local function buildBuyPayload(op1, op2, itemName)
+    local len = #itemName
+    if len > 255 then return nil end
+    return buffer.fromstring(
+        string.char(op1) .. string.char(op2) ..
+        string.char(len) .. itemName
+    )
 end
 
--- ===== COLORS =====
-local C = {
-	bg = Color3.fromRGB(18, 18, 20),
-	header = Color3.fromRGB(24, 24, 27),
-	text = Color3.fromRGB(220, 220, 225),
-	textDim = Color3.fromRGB(110, 110, 120),
-	green = Color3.fromRGB(80, 200, 120),
-	red = Color3.fromRGB(190, 65, 65),
-	stroke = Color3.fromRGB(48, 48, 56),
-	close = Color3.fromRGB(190, 65, 65),
-	min = Color3.fromRGB(220, 170, 60),
-}
+-- ===== SCAN =====
+local function scanShop(shop)
+    local items = {}
+    local base = resolvePath(shop.base)
+    if not base then return items end
 
--- ===== GUI =====
+    for _, child in ipairs(base:GetChildren()) do
+        if child.Name ~= "ItemTemplate" and child.Name ~= "Main_Frame" then
+            local mainFrame = child:FindFirstChild("Main_Frame")
+            if mainFrame then
+                local stockLabel = mainFrame:FindFirstChild("Stock_Text")
+                if stockLabel and stockLabel:IsA("TextLabel") then
+                    local stock = parseStock(stockLabel)
+                    if stock and stock > 0 then
+                        table.insert(items, {
+                            name = child.Name,
+                            stock = stock,
+                        })
+                    end
+                end
+            end
+        end
+    end
+    table.sort(items, function(a, b) return a.name < b.name end)
+    return items
+end
+
+-- ============================================================
+-- ===== GUI (MINIMALIS) =====
+-- ============================================================
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AutoBuyMini"
+screenGui.Name = "AutoBuyAll"
 screenGui.ResetOnSpawn = false
-screenGui.IgnoreGuiInset = true
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
-local FRAME_W = 220
-local FRAME_H = 92  -- naik karena tambah 1 toggle crate
+local COLORS = {
+    bg        = Color3.fromRGB(22, 22, 28),
+    header    = Color3.fromRGB(16, 16, 20),
+    card      = Color3.fromRGB(28, 28, 34),
+    text      = Color3.fromRGB(235, 235, 240),
+    textDim   = Color3.fromRGB(140, 145, 160),
+    green     = Color3.fromRGB(80, 190, 120),
+    greenHv   = Color3.fromRGB(100, 220, 140),
+    red       = Color3.fromRGB(220, 80, 90),
+    stroke    = Color3.fromRGB(48, 48, 60),
+    disabled  = Color3.fromRGB(70, 70, 85),
+}
 
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, FRAME_W, 0, FRAME_H)
-frame.Position = UDim2.new(0, 12, 0, 60)
-frame.BackgroundColor3 = C.bg
-frame.BorderSizePixel = 0
-frame.Active = true
-frame.Draggable = true
-frame.Parent = screenGui
-Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
-
-local stroke = Instance.new("UIStroke")
-stroke.Color = C.stroke
-stroke.Thickness = 1
-stroke.Transparency = 0.3
-stroke.Parent = frame
-
--- Title bar
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -50, 0, 26)
-title.Position = UDim2.new(0, 10, 0, 0)
-title.BackgroundTransparency = 1
-title.Text = "⚙️ Auto Buy (Log)"
-title.TextColor3 = C.text
-title.Font = Enum.Font.GothamBold
-title.TextSize = 11
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = frame
-
--- Dot indicator (gear selalu ON)
-local dot = Instance.new("Frame")
-dot.Size = UDim2.new(0, 8, 0, 8)
-dot.Position = UDim2.new(1, -46, 0, 9)
-dot.BackgroundColor3 = C.green
-dot.BorderSizePixel = 0
-dot.Parent = frame
-Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
-
-local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 18, 0, 18)
-closeBtn.Position = UDim2.new(1, -24, 0, 4)
-closeBtn.BackgroundColor3 = C.close
-closeBtn.Text = "×"
-closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 13
-closeBtn.BorderSizePixel = 0
-closeBtn.AutoButtonColor = false
-closeBtn.Parent = frame
-Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 4)
-
--- Toggle SEED
-local seedToggle = Instance.new("TextButton")
-seedToggle.Size = UDim2.new(1, -16, 0, 26)
-seedToggle.Position = UDim2.new(0, 8, 0, 30)
-seedToggle.BackgroundColor3 = C.green
-seedToggle.Text = "🌱 SEED: ON"
-seedToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-seedToggle.Font = Enum.Font.GothamBold
-seedToggle.TextSize = 11
-seedToggle.BorderSizePixel = 0
-seedToggle.AutoButtonColor = false
-seedToggle.Parent = frame
-Instance.new("UICorner", seedToggle).CornerRadius = UDim.new(0, 6)
-
--- Toggle CRATE
-local crateToggle = Instance.new("TextButton")
-crateToggle.Size = UDim2.new(1, -16, 0, 26)
-crateToggle.Position = UDim2.new(0, 8, 0, 60)
-crateToggle.BackgroundColor3 = C.green
-crateToggle.Text = "📦 CRATE: ON"
-crateToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-crateToggle.Font = Enum.Font.GothamBold
-crateToggle.TextSize = 11
-crateToggle.BorderSizePixel = 0
-crateToggle.AutoButtonColor = false
-crateToggle.Parent = frame
-Instance.new("UICorner", crateToggle).CornerRadius = UDim.new(0, 6)
-
--- ===== AUTO BUY =====
-local BUY_INTERVAL = 0.5
-local lastStock = {}  -- [key] = stok terakhir
-
-local seedEnabled = true
-local crateEnabled = true
-
-local function startAutoBuy(key, kind, stockPath, payloadBuilder, isEnabledFn)
-	task.spawn(function()
-		while screenGui.Parent do
-			if isEnabledFn() then
-				local label = resolvePath(stockPath)
-				local stock = parseStock(label)
-
-				if stock and stock > 0 then
-					local payload = payloadBuilder(key)
-					if payload then
-						local ok = pcall(function() remote:FireServer(payload) end)
-						if ok then
-							if lastStock[key] ~= stock then
-								lastStock[key] = stock
-								logBought(kind, key, stock)
-							end
-						end
-					end
-				else
-					if stock == 0 then lastStock[key] = nil end
-				end
-			end
-
-			task.wait(BUY_INTERVAL)
-		end
-	end)
+local function corner(p, r)
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 8); c.Parent = p
 end
 
--- ===== START ALL =====
-print("=====================================")
-print("[AutoBuy] Starting...")
-print(string.format("[AutoBuy] Gear: %d | Seeds: %d | Crates: %d",
-	#GEAR_LIST, #SEED_LIST, #CRATE_LIST))
-print("=====================================")
+local FRAME_WIDTH = 280
+local FRAME_HEIGHT = 260
+local FRAME_HEIGHT_MIN = 42
 
--- Gear (selalu ON)
-for _, name in ipairs(GEAR_LIST) do
-	startAutoBuy(name, "GEAR", getGearStockPath(name), buildGearPayload, function()
-		return true
-	end)
-end
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
+main.Position = UDim2.new(0, 15, 0, 15)
+main.BackgroundColor3 = COLORS.bg
+main.BorderSizePixel = 0
+main.Active = true
+main.Parent = screenGui
+corner(main, 12)
 
--- Seeds (bisa di-toggle)
-for _, name in ipairs(SEED_LIST) do
-	startAutoBuy(name, "SEED", getSeedStockPath(name), buildSeedPayload, function()
-		return seedEnabled
-	end)
-end
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = COLORS.stroke
+mainStroke.Thickness = 1
+mainStroke.Parent = main
 
--- Crates (bisa di-toggle)
-for _, name in ipairs(CRATE_LIST) do
-	startAutoBuy(name, "CRATE", getCrateStockPath(name), buildCratePayload, function()
-		return crateEnabled
-	end)
-end
-
--- ===== TOGGLE SEED =====
-seedToggle.MouseButton1Click:Connect(function()
-	seedEnabled = not seedEnabled
-	if seedEnabled then
-		seedToggle.Text = "🌱 SEED: ON"
-		seedToggle.BackgroundColor3 = C.green
-		print("[AutoBuy] Seed auto-buy: ON")
-	else
-		seedToggle.Text = "🌱 SEED: OFF"
-		seedToggle.BackgroundColor3 = C.red
-		print("[AutoBuy] Seed auto-buy: OFF")
-	end
+-- Drag
+local dragging, dragStart, startPos
+main.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = main.Position
+    end
+end)
+main.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        main.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
 end)
 
--- ===== TOGGLE CRATE =====
-crateToggle.MouseButton1Click:Connect(function()
-	crateEnabled = not crateEnabled
-	if crateEnabled then
-		crateToggle.Text = "📦 CRATE: ON"
-		crateToggle.BackgroundColor3 = C.green
-		print("[AutoBuy] Crate auto-buy: ON")
-	else
-		crateToggle.Text = "📦 CRATE: OFF"
-		crateToggle.BackgroundColor3 = C.red
-		print("[AutoBuy] Crate auto-buy: OFF")
-	end
+-- ===== HEADER (dengan minimize + close) =====
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 34)
+header.BackgroundColor3 = COLORS.header
+header.BorderSizePixel = 0
+header.Parent = main
+corner(header, 12)
+
+local headerFix = Instance.new("Frame")
+headerFix.Size = UDim2.new(1, 0, 0, 12)
+headerFix.Position = UDim2.new(0, 0, 1, -12)
+headerFix.BackgroundColor3 = COLORS.header
+headerFix.BorderSizePixel = 0
+headerFix.Parent = header
+
+-- Toggle switch DI HEADER
+local toggleTrack = Instance.new("Frame")
+toggleTrack.Size = UDim2.new(0, 38, 0, 18)
+toggleTrack.Position = UDim2.new(0, 10, 0.5, -9)
+toggleTrack.BackgroundColor3 = COLORS.disabled
+toggleTrack.BorderSizePixel = 0
+toggleTrack.Parent = header
+corner(toggleTrack, 9)
+
+local toggleKnob = Instance.new("Frame")
+toggleKnob.Size = UDim2.new(0, 14, 0, 14)
+toggleKnob.Position = UDim2.new(0, 2, 0.5, -7)
+toggleKnob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+toggleKnob.BorderSizePixel = 0
+toggleKnob.Parent = toggleTrack
+corner(toggleKnob, 7)
+
+local titleLbl = Instance.new("TextLabel")
+titleLbl.Size = UDim2.new(1, -110, 1, 0)
+titleLbl.Position = UDim2.new(0, 54, 0, 0)
+titleLbl.BackgroundTransparency = 1
+titleLbl.Text = "🛒 Auto Buy All"
+titleLbl.TextColor3 = COLORS.text
+titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+titleLbl.Font = Enum.Font.GothamBold
+titleLbl.TextSize = 12
+titleLbl.Parent = header
+
+-- Status dot
+local statusDot = Instance.new("Frame")
+statusDot.Size = UDim2.new(0, 8, 0, 8)
+statusDot.Position = UDim2.new(1, -76, 0.5, -4)
+statusDot.BackgroundColor3 = COLORS.disabled
+statusDot.BorderSizePixel = 0
+statusDot.Parent = header
+corner(statusDot, 4)
+
+-- Minimize button
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 24, 0, 24)
+minBtn.Position = UDim2.new(1, -56, 0, 5)
+minBtn.BackgroundColor3 = COLORS.card
+minBtn.Text = "—"
+minBtn.TextColor3 = COLORS.text
+minBtn.Font = Enum.Font.GothamBold
+minBtn.TextSize = 12
+minBtn.Parent = header
+corner(minBtn, 6)
+
+-- Close button
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 24, 0, 24)
+closeBtn.Position = UDim2.new(1, -30, 0, 5)
+closeBtn.BackgroundColor3 = COLORS.red
+closeBtn.Text = "✕"
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 12
+closeBtn.Parent = header
+corner(closeBtn, 6)
+
+-- Toggle click area
+local toggleClick = Instance.new("TextButton")
+toggleClick.Size = UDim2.new(0, 50, 1, 0)
+toggleClick.Position = UDim2.new(0, 6, 0, 0)
+toggleClick.BackgroundTransparency = 1
+toggleClick.Text = ""
+toggleClick.BorderSizePixel = 0
+toggleClick.Parent = header
+
+-- ===== BODY =====
+local body = Instance.new("Frame")
+body.Size = UDim2.new(1, -16, 1, -42)
+body.Position = UDim2.new(0, 8, 0, 38)
+body.BackgroundTransparency = 1
+body.Parent = main
+
+-- ===== SCROLL LIST (semua item gabung) =====
+local listFrame = Instance.new("ScrollingFrame")
+listFrame.Size = UDim2.new(1, 0, 1, 0)
+listFrame.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+listFrame.BorderSizePixel = 0
+listFrame.ScrollBarThickness = 3
+listFrame.ScrollBarImageColor3 = COLORS.stroke
+listFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+listFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+listFrame.Parent = body
+corner(listFrame, 8)
+
+local listStroke = Instance.new("UIStroke")
+listStroke.Color = COLORS.stroke
+listStroke.Thickness = 1
+listStroke.Parent = listFrame
+
+local listPad = Instance.new("UIPadding", listFrame)
+listPad.PaddingTop = UDim.new(0, 6)
+listPad.PaddingBottom = UDim.new(0, 6)
+listPad.PaddingLeft = UDim.new(0, 6)
+listPad.PaddingRight = UDim.new(0, 6)
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.Padding = UDim.new(0, 3)
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Parent = listFrame
+
+-- ===== STATE =====
+local isRunning = false
+local shopData = {}    -- [shopName] = items
+local lastStock = {}   -- [key] = stock
+
+local function setToggleVisual(on)
+    if on then
+        TweenService:Create(toggleTrack, TweenInfo.new(0.15), {
+            BackgroundColor3 = COLORS.green
+        }):Play()
+        TweenService:Create(toggleKnob, TweenInfo.new(0.15), {
+            Position = UDim2.new(1, -16, 0.5, -7)
+        }):Play()
+        TweenService:Create(statusDot, TweenInfo.new(0.15), {
+            BackgroundColor3 = COLORS.green
+        }):Play()
+    else
+        TweenService:Create(toggleTrack, TweenInfo.new(0.15), {
+            BackgroundColor3 = COLORS.disabled
+        }):Play()
+        TweenService:Create(toggleKnob, TweenInfo.new(0.15), {
+            Position = UDim2.new(0, 2, 0.5, -7)
+        }):Play()
+        TweenService:Create(statusDot, TweenInfo.new(0.15), {
+            BackgroundColor3 = COLORS.disabled
+        }):Play()
+    end
+end
+
+-- ===== RENDER LIST =====
+local function rebuildList()
+    -- Clear
+    for _, child in ipairs(listFrame:GetChildren()) do
+        if child:IsA("Frame") or child:IsA("TextLabel") then
+            child:Destroy()
+        end
+    end
+
+    local totalItems = 0
+    local order = 0
+
+    for _, shop in ipairs(SHOPS) do
+        local items = shopData[shop.name] or {}
+        if #items > 0 then
+            -- Section header
+            order += 1
+            local sectionHeader = Instance.new("TextLabel")
+            sectionHeader.Size = UDim2.new(1, 0, 0, 16)
+            sectionHeader.BackgroundTransparency = 1
+            sectionHeader.Text = string.format("%s %s (%d)", shop.icon, shop.name, #items)
+            sectionHeader.TextColor3 = shop.color
+            sectionHeader.Font = Enum.Font.GothamBold
+            sectionHeader.TextSize = 10
+            sectionHeader.TextXAlignment = Enum.TextXAlignment.Left
+            sectionHeader.LayoutOrder = order
+            sectionHeader.Parent = listFrame
+
+            -- Items
+            for _, item in ipairs(items) do
+                order += 1
+                local row = Instance.new("Frame")
+                row.Size = UDim2.new(1, 0, 0, 20)
+                row.BackgroundColor3 = COLORS.card
+                row.BorderSizePixel = 0
+                row.LayoutOrder = order
+                row.Parent = listFrame
+                corner(row, 4)
+
+                local dot = Instance.new("Frame")
+                dot.Size = UDim2.new(0, 5, 0, 5)
+                dot.Position = UDim2.new(0, 6, 0.5, -2.5)
+                dot.BackgroundColor3 = shop.color
+                dot.BorderSizePixel = 0
+                dot.Parent = row
+                corner(dot, 2.5)
+
+                local nameLbl = Instance.new("TextLabel")
+                nameLbl.Size = UDim2.new(1, -60, 1, 0)
+                nameLbl.Position = UDim2.new(0, 16, 0, 0)
+                nameLbl.BackgroundTransparency = 1
+                nameLbl.Text = item.name
+                nameLbl.TextColor3 = COLORS.text
+                nameLbl.Font = Enum.Font.GothamMedium
+                nameLbl.TextSize = 9
+                nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+                nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+                nameLbl.Parent = row
+
+                local stockLbl = Instance.new("TextLabel")
+                stockLbl.Size = UDim2.new(0, 40, 1, 0)
+                stockLbl.Position = UDim2.new(1, -44, 0, 0)
+                stockLbl.BackgroundTransparency = 1
+                stockLbl.Text = "x" .. item.stock
+                stockLbl.TextColor3 = shop.color
+                stockLbl.Font = Enum.Font.Code
+                stockLbl.TextSize = 9
+                stockLbl.TextXAlignment = Enum.TextXAlignment.Right
+                stockLbl.Parent = row
+
+                totalItems += 1
+            end
+        end
+    end
+
+    -- Empty state
+    if totalItems == 0 then
+        local empty = Instance.new("TextLabel")
+        empty.Size = UDim2.new(1, 0, 0, 40)
+        empty.BackgroundTransparency = 1
+        empty.Text = "📭 Gak ada stock / shop gak kebuka"
+        empty.TextColor3 = COLORS.textDim
+        empty.Font = Enum.Font.Gotham
+        empty.TextSize = 10
+        empty.TextXAlignment = Enum.TextXAlignment.Center
+        empty.Parent = listFrame
+    end
+end
+
+-- ===== REFRESH SCAN =====
+local function refreshAll()
+    for _, shop in ipairs(SHOPS) do
+        shopData[shop.name] = scanShop(shop)
+    end
+    rebuildList()
+end
+
+-- ===== AUTO BUY LOOP =====
+local function startAutoBuy()
+    task.spawn(function()
+        while screenGui.Parent do
+            if isRunning then
+                for _, shop in ipairs(SHOPS) do
+                    if not isRunning then break end
+                    local items = shopData[shop.name] or {}
+                    for _, item in ipairs(items) do
+                        if not isRunning then break end
+                        if item.stock and item.stock > 0 then
+                            local payload = buildBuyPayload(shop.opcode1, shop.opcode2, item.name)
+                            if payload then
+                                pcall(function()
+                                    remote:FireServer(payload)
+                                end)
+                            end
+                        end
+                    end
+                end
+            end
+            task.wait(BUY_INTERVAL)
+        end
+    end)
+end
+
+-- ===== TOGGLE =====
+local function toggleRun()
+    isRunning = not isRunning
+    setToggleVisual(isRunning)
+    print("[AutoBuy] " .. (isRunning and "ON" or "OFF"))
+end
+
+toggleClick.MouseButton1Click:Connect(toggleRun)
+
+-- ===== MINIMIZE =====
+local isMinimized = false
+minBtn.MouseButton1Click:Connect(function()
+    isMinimized = not isMinimized
+    if isMinimized then
+        body.Visible = false
+        main.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT_MIN)
+        minBtn.Text = "+"
+    else
+        body.Visible = true
+        main.Size = UDim2.new(0, FRAME_WIDTH, 0, FRAME_HEIGHT)
+        minBtn.Text = "—"
+    end
 end)
 
 -- ===== CLOSE =====
 closeBtn.MouseButton1Click:Connect(function()
-	screenGui:Destroy()
-	print("[AutoBuy] Stopped.")
+    isRunning = false
+    screenGui:Destroy()
 end)
 
-print("[AutoBuy] Loaded | Aktif. Klik toggle buat ON/OFF seed/crate.")
+-- ===== INIT =====
+refreshAll()
+startAutoBuy()
+setToggleVisual(false)
+
+-- Auto refresh scan
+task.spawn(function()
+    while screenGui.Parent do
+        task.wait(SCAN_INTERVAL)
+        refreshAll()
+    end
+end)
+
+print("✅ Auto Buy All loaded")
+print("   Toggle di header buat ON/OFF")
