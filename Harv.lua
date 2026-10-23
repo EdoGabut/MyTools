@@ -114,7 +114,7 @@ local ROOT = workspace:WaitForChild("Gardens", 30)
 
 local CONFIG = {
 	MAX_WEIGHT          = 80,
-	SAVE_WEIGHT         = 300,
+	SAVE_WEIGHT         = 150,
 	AUTO_ENABLED        = false,
 	AUTO_SELL_ENABLED   = false,
 	AUTO_SELL_INTERVAL  = 3,
