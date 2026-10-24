@@ -1,5 +1,6 @@
 -- ============================================================
 -- Mail Sender (Item + Fruit) — Combined
+-- Items: TextBox qty per row | Fruits: tombol +/-
 -- ============================================================
 local CoreGui           = game:GetService("CoreGui")
 local Players           = game:GetService("Players")
@@ -14,13 +15,13 @@ local remote = ReplicatedStorage:WaitForChild("SharedModules")
     :WaitForChild("RemoteEvent")
 
 --// ============================================================
---// ==== CONFIG (EDIT MANUAL DI SINI) ====
+--// ==== CONFIG ====
 --// ============================================================
 local CONFIG = {
-    FRAME_WIDTH   = 300,   -- lebar GUI
-    FRAME_HEIGHT  = 420,   -- 👈 tinggi GUI (kalau masih panjang/kosong, ubah ini)
-    ROW_HEIGHT    = 26,    -- tinggi tiap row list
-    VISIBLE_ROWS  = 6,     -- 👈 jumlah row yang kelihatan (ubah kalau mau)
+    FRAME_WIDTH   = 320,
+    FRAME_HEIGHT  = 440,
+    ROW_HEIGHT    = 30,
+    VISIBLE_ROWS  = 6,
 }
 
 local CATEGORY_FRUIT   = "HarvestedFruits"
@@ -65,7 +66,7 @@ local function resolveUsername(username)
     return nil
 end
 
---// ==== FRUIT SCAN (✅ FIX: skip potted & non-fruit) ====
+--// ==== FRUIT SCAN ====
 local function scanFruits()
     local items = {}
     local backpack = LocalPlayer:FindFirstChild("Backpack")
@@ -73,15 +74,11 @@ local function scanFruits()
     for _, item in ipairs(backpack:GetChildren()) do
         local uuid = item:GetAttribute("Id")
         if uuid then
-            -- ✅ Skip potted plant
             if item:GetAttribute("PottedPlant") == true then continue end
             if item:GetAttribute("PlantName") ~= nil then continue end
-
-            -- ✅ Wajib punya Weight atau Fruit (fruit asli)
             local weight = item:GetAttribute("Weight")
             local fruitName = item:GetAttribute("FruitName") or item:GetAttribute("Fruit")
             if weight == nil and fruitName == nil then continue end
-
             table.insert(items, {
                 name     = item.Name,
                 uuid     = uuid,
@@ -147,6 +144,8 @@ end
 local function scanItems()
     local result = {}
     local seen = {}
+    local grouped = {}
+
     local function addTool(tool)
         if seen[tool] then return end
         seen[tool] = true
@@ -156,15 +155,21 @@ local function scanItems()
         if isPottedName(displayName) or attrs.PottedPlant == true then return end
         local cat = getCategoryFromAttributes(tool)
         if not cat then return end
-        local count = attrs.Count
-        if type(count) ~= "number" or count < 1 then count = 1 end
-        table.insert(result, {
-            name = stripSeedSuffix(displayName),
-            display = displayName,
-            category = cat,
-            count = count,
-        })
+        local mult = tonumber(attrs.Count) or 1
+        if mult < 1 then mult = 1 end
+        local key = displayName .. "|" .. cat
+        if grouped[key] then
+            grouped[key].count += mult
+        else
+            grouped[key] = {
+                name = stripSeedSuffix(displayName),
+                display = displayName,
+                category = cat,
+                count = mult,
+            }
+        end
     end
+
     local bp = LocalPlayer:FindFirstChild("Backpack")
     if bp then
         for _, t in ipairs(bp:GetChildren()) do
@@ -177,6 +182,8 @@ local function scanItems()
             if t:IsA("Tool") then addTool(t) end
         end
     end
+
+    for _, v in pairs(grouped) do table.insert(result, v) end
     table.sort(result, function(a, b)
         if a.category ~= b.category then return a.category < b.category end
         return a.display:lower() < b.display:lower()
@@ -184,80 +191,57 @@ local function scanItems()
     return result
 end
 
---// ==== PAYLOAD BUILDERS ====
-local function buildItemPayload(targetUserId, itemName, totalCount, category)
-    if #itemName > 255 or #category > 255 then return nil end
-    if totalCount <= 0 then return nil end
-    local entries = {}
-    local remaining = totalCount
-    while remaining > 0 do
-        table.insert(entries, math.min(remaining, 255))
-        remaining -= 255
+--// ==== PAYLOAD BUILDER ====
+local function buildMultiCategoryPayload(targetUserId, entries)
+    local needed = 3 + 8 + 1 + 3
+    for _, e in ipairs(entries) do
+        needed = needed + 3
+            + (2 + #"ItemKey")  + (2 + #e.uuid)
+            + (2 + #"Count")    + 2
+            + (2 + #"Category") + (2 + #e.category)
+            + 1
     end
-    local buf = buffer.create(64 + #entries * (32 + #itemName + #category + 16))
+    local buf = buffer.create(needed)
     local pos = 0
     local function w(n) buffer.writeu8(buf, pos, n); pos += 1 end
     local function ws(s)
         w(0x0B); w(#s)
         for i = 1, #s do w(string.byte(s, i)) end
     end
+
     w(0x8C); w(0x01); w(0x69)
     buffer.writef64(buf, pos, targetUserId); pos += 8
-    w(0x1C); w(0x05); w(0x01); w(0x1C)
-    for i, count in ipairs(entries) do
-        if i > 1 then w(0x05); w(i); w(0x1C) end
-        ws("ItemKey"); ws(itemName)
-        ws("Count"); w(0x05); w(count)
-        ws("Category"); ws(category)
+    w(0x1C)
+
+    for i, e in ipairs(entries) do
+        w(0x05); w(i % 256); w(0x1C)
+        ws("ItemKey");  ws(e.uuid)
+        ws("Count");    w(0x05); w(e.count % 256)
+        ws("Category"); ws(e.category)
         w(0x00)
     end
+
     w(0x00); w(0x00); w(0x00)
     local final = buffer.create(pos)
     buffer.copy(final, 0, buf, 0, pos)
-    return final, entries
+    return final
 end
 
-local function buildMultiEntryPayload(targetUserId, entries)
-    local needed = 16
+local function expandEntries(entries)
+    local out = {}
     for _, e in ipairs(entries) do
-        needed = needed + 3
-            + (2 + #"ItemKey") + (2 + #e.uuid)
-            + (2 + #"Count")   + 3
-            + (2 + #"Category")+ (2 + #CATEGORY_FRUIT)
-            + 1
+        local remaining = e.count or 1
+        if remaining < 1 then remaining = 1 end
+        while remaining > 0 do
+            table.insert(out, {
+                uuid     = e.uuid,
+                category = e.category,
+                count    = math.min(remaining, 255),
+            })
+            remaining -= 255
+        end
     end
-    needed = needed + 4
-    local buf = buffer.create(needed)
-    local pos = 0
-    buffer.writeu8(buf, pos, 0x8C); pos += 1
-    buffer.writeu8(buf, pos, 0x01); pos += 1
-    buffer.writeu8(buf, pos, 0x69); pos += 1
-    buffer.writef64(buf, pos, targetUserId); pos += 8
-    buffer.writeu8(buf, pos, 0x1C); pos += 1
-    local function writeString(s)
-        buffer.writeu8(buf, pos, 0x0B); pos += 1
-        buffer.writeu8(buf, pos, #s);  pos += 1
-        for i = 1, #s do buffer.writeu8(buf, pos, string.byte(s, i)); pos += 1 end
-    end
-    local function writeInt(n)
-        buffer.writeu8(buf, pos, 0x05); pos += 1
-        buffer.writeu8(buf, pos, n % 256); pos += 1
-    end
-    for i, entry in ipairs(entries) do
-        buffer.writeu8(buf, pos, 0x05); pos += 1
-        buffer.writeu8(buf, pos, i % 256); pos += 1
-        buffer.writeu8(buf, pos, 0x1C); pos += 1
-        writeString("ItemKey");  writeString(entry.uuid)
-        writeString("Count");    writeInt(entry.count or 1)
-        writeString("Category"); writeString(CATEGORY_FRUIT)
-        buffer.writeu8(buf, pos, 0x00); pos += 1
-    end
-    buffer.writeu8(buf, pos, 0x00); pos += 1
-    buffer.writeu8(buf, pos, 0x00); pos += 1
-    buffer.writeu8(buf, pos, 0x00); pos += 1
-    local final = buffer.create(pos)
-    buffer.copy(final, 0, buf, 0, pos)
-    return final
+    return out
 end
 
 local function favoriteFruit(uuid)
@@ -279,15 +263,13 @@ gui.IgnoreGuiInset = true
 gui.DisplayOrder = 999
 gui.Parent = CoreGui
 
--- Layout calculator (biar tinggi tetap kalau config diubah)
 local HEADER_H   = 30
-local TARGET_H   = 28 + 8     -- card + spacing
+local TARGET_H   = 28 + 8
 local STATUS_H   = 18
 local TAB_H      = 26 + 8
 local SEARCH_H   = 26 + 4
 local COUNTER_H  = 14 + 2
 local LIST_H     = CONFIG.VISIBLE_ROWS * CONFIG.ROW_HEIGHT + 8
-local BOTTOM_H   = 32 + 6 + 26 + 8
 
 local main = Instance.new("Frame")
 main.Size = UDim2.new(0, CONFIG.FRAME_WIDTH, 0, CONFIG.FRAME_HEIGHT)
@@ -489,56 +471,10 @@ listPad.Parent = listFrame
 -- Bottom
 local BOTTOM_Y = LIST_Y + LIST_H + 8
 
--- Count card (item tab)
-local countCard = Instance.new("Frame")
-countCard.Size = UDim2.new(1, -20, 0, 32)
-countCard.Position = UDim2.new(0, 10, 0, BOTTOM_Y)
-countCard.BackgroundColor3 = C_CARD
-countCard.BorderSizePixel = 0
-countCard.Parent = main
-Instance.new("UICorner", countCard).CornerRadius = UDim.new(0, 8)
-local ccs = Instance.new("UIStroke"); ccs.Color = C_BORDER; ccs.Thickness = 1; ccs.Parent = countCard
-
-local minusBtn = Instance.new("TextButton")
-minusBtn.Size = UDim2.new(0, 28, 1, -4)
-minusBtn.Position = UDim2.new(0, 2, 0, 2)
-minusBtn.BackgroundColor3 = C_ROW
-minusBtn.Text = "−"
-minusBtn.TextColor3 = C_TEXT
-minusBtn.Font = Enum.Font.GothamBold
-minusBtn.TextSize = 14
-minusBtn.Parent = countCard
-Instance.new("UICorner", minusBtn).CornerRadius = UDim.new(0, 6)
-
-local countBox = Instance.new("TextBox")
-countBox.Size = UDim2.new(1, -68, 1, -4)
-countBox.Position = UDim2.new(0, 34, 0, 2)
-countBox.BackgroundTransparency = 1
-countBox.Text = "0"
-countBox.PlaceholderText = "0"
-countBox.TextColor3 = C_TEXT
-countBox.PlaceholderColor3 = C_SUB
-countBox.Font = Enum.Font.Code
-countBox.TextSize = 12
-countBox.TextXAlignment = Enum.TextXAlignment.Center
-countBox.ClearTextOnFocus = false
-countBox.Parent = countCard
-
-local plusBtn = Instance.new("TextButton")
-plusBtn.Size = UDim2.new(0, 28, 1, -4)
-plusBtn.Position = UDim2.new(1, -30, 0, 2)
-plusBtn.BackgroundColor3 = C_ROW
-plusBtn.Text = "+"
-plusBtn.TextColor3 = C_TEXT
-plusBtn.Font = Enum.Font.GothamBold
-plusBtn.TextSize = 14
-plusBtn.Parent = countCard
-Instance.new("UICorner", plusBtn).CornerRadius = UDim.new(0, 6)
-
--- Bottom row item
+-- Item bottom
 local itemBtnRow = Instance.new("Frame")
 itemBtnRow.Size = UDim2.new(1, -20, 0, 26)
-itemBtnRow.Position = UDim2.new(0, 10, 0, BOTTOM_Y + 38)
+itemBtnRow.Position = UDim2.new(0, 10, 0, BOTTOM_Y)
 itemBtnRow.BackgroundTransparency = 1
 itemBtnRow.Parent = main
 
@@ -623,7 +559,7 @@ Instance.new("UICorner", sendFruitBtn).CornerRadius = UDim.new(0, 8)
 local currentTab         = "items"
 local itemList           = {}
 local fruitList          = {}
-local currentItem        = nil
+local itemEntries        = {}
 local fruitEntries       = {}
 local targetId           = nil
 local targetName         = nil
@@ -642,7 +578,9 @@ end
 
 local function updateCounter()
     if currentTab == "items" then
-        counterLbl.Text = string.format("%d item", #itemList)
+        local nEntries = 0
+        for _ in pairs(itemEntries) do nEntries += 1 end
+        counterLbl.Text = string.format("%d item  •  %d mail", #itemList, nEntries)
     else
         local favTotal = 0
         for _, e in ipairs(fruitList) do if e.isFav then favTotal += 1 end end
@@ -710,29 +648,50 @@ function onFavChanged(inst)
     setStatus((newFav and "★ fav'd " or "☆ unfav'd ") .. inst.Name, C_SUB)
 end
 
+local function sanitizeQty(text, maxVal)
+    local n = tonumber(text) or 0
+    n = math.floor(n)
+    if n < 0 then n = 0 end
+    if maxVal and n > maxVal then n = maxVal end
+    return n
+end
+
 -- ============ RENDER ============
 local function rebuildList()
     local savedScroll = listFrame.CanvasPosition
     for _, c in ipairs(listFrame:GetChildren()) do
-        if c:IsA("TextButton") or c:IsA("TextLabel") then c:Destroy() end
+        if c:IsA("TextButton") or c:IsA("TextLabel") or c:IsA("TextBox") then c:Destroy() end
     end
     rowRefs = {}
 
     if currentTab == "items" then
         itemList = scanItems()
+
+        local live = {}
+        for _, it in ipairs(itemList) do
+            live[it.category .. "|" .. it.display] = true
+        end
+        for key in pairs(itemEntries) do
+            if not live[key] then itemEntries[key] = nil end
+        end
+
         local filtered = {}
         for _, it in ipairs(itemList) do
             if matchesQuery(it.display, query) or matchesQuery(it.category, query) then
                 table.insert(filtered, it)
             end
         end
+
         for i, it in ipairs(filtered) do
+            local key = it.category .. "|" .. it.display
+            local sel = itemEntries[key]
+
             local row = Instance.new("TextButton")
             row.Size = UDim2.new(1, 0, 0, CONFIG.ROW_HEIGHT)
-            row.BackgroundColor3 = (currentItem and currentItem.display == it.display) and C_ROW_SEL or C_ROW
+            row.BackgroundColor3 = (sel and sel.count > 0) and C_ROW_SEL or C_ROW
             row.Text = ""
             row.LayoutOrder = i
-            row.AutoButtonColor = true
+            row.AutoButtonColor = false
             row.Parent = listFrame
             Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
 
@@ -748,7 +707,7 @@ local function rebuildList()
             catLbl.Parent = row
 
             local nameLbl = Instance.new("TextLabel")
-            nameLbl.Size = UDim2.new(1, -60, 0, 13)
+            nameLbl.Size = UDim2.new(1, -130, 0, 13)
             nameLbl.Position = UDim2.new(0, 6, 0, 13)
             nameLbl.BackgroundTransparency = 1
             nameLbl.Text = it.display
@@ -759,28 +718,60 @@ local function rebuildList()
             nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
             nameLbl.Parent = row
 
-            local countLbl = Instance.new("TextLabel")
-            countLbl.Size = UDim2.new(0, 50, 1, 0)
-            countLbl.Position = UDim2.new(1, -54, 0, 0)
-            countLbl.BackgroundTransparency = 1
-            countLbl.Text = string.format("x%d", it.count)
-            countLbl.TextColor3 = C_GREEN
-            countLbl.Font = Enum.Font.Code
-            countLbl.TextSize = 10
-            countLbl.TextXAlignment = Enum.TextXAlignment.Right
-            countLbl.Parent = row
+            local stockLbl = Instance.new("TextLabel")
+            stockLbl.Size = UDim2.new(0, 40, 1, 0)
+            stockLbl.Position = UDim2.new(1, -96, 0, 0)
+            stockLbl.BackgroundTransparency = 1
+            stockLbl.Text = string.format("x%d", it.count)
+            stockLbl.TextColor3 = C_GREEN
+            stockLbl.Font = Enum.Font.Code
+            stockLbl.TextSize = 9
+            stockLbl.TextXAlignment = Enum.TextXAlignment.Right
+            stockLbl.Parent = row
 
-            row.MouseButton1Click:Connect(function()
-                currentItem = it
-                countBox.Text = "0"
-                for _, r in pairs(rowRefs) do
-                    if r.row and r.row.Parent then r.row.BackgroundColor3 = C_ROW end
+            local qtyBox = Instance.new("TextBox")
+            qtyBox.Size = UDim2.new(0, 50, 0, 22)
+            qtyBox.Position = UDim2.new(1, -56, 0, 4)
+            qtyBox.BackgroundColor3 = C_CARD
+            qtyBox.BorderSizePixel = 0
+            qtyBox.Text = sel and tostring(sel.count) or "0"
+            qtyBox.PlaceholderText = "0"
+            qtyBox.PlaceholderColor3 = C_SUB
+            qtyBox.TextColor3 = C_WARN
+            qtyBox.Font = Enum.Font.Code
+            qtyBox.TextSize = 11
+            qtyBox.TextXAlignment = Enum.TextXAlignment.Center
+            qtyBox.ClearTextOnFocus = false
+            qtyBox.Parent = row
+            Instance.new("UICorner", qtyBox).CornerRadius = UDim.new(0, 6)
+            local qtyStroke = Instance.new("UIStroke")
+            qtyStroke.Color = C_BORDER; qtyStroke.Thickness = 1; qtyStroke.Parent = qtyBox
+
+            qtyBox.FocusLost:Connect(function()
+                local n = sanitizeQty(qtyBox.Text, it.count)
+                qtyBox.Text = tostring(n)
+                if n > 0 then
+                    itemEntries[key] = {
+                        name = it.name,
+                        display = it.display,
+                        category = it.category,
+                        count = n,
+                    }
+                    row.BackgroundColor3 = C_ROW_SEL
+                    qtyBox.TextColor3 = C_WARN
+                    qtyStroke.Color = C_WARN
+                else
+                    itemEntries[key] = nil
+                    row.BackgroundColor3 = C_ROW
+                    qtyBox.TextColor3 = C_SUB
+                    qtyStroke.Color = C_BORDER
                 end
-                row.BackgroundColor3 = C_ROW_SEL
-                setStatus(string.format("selected: [%s] %s", it.category, it.display), C_SUB)
+                updateCounter()
             end)
-            rowRefs[it.display] = { row = row }
+
+            rowRefs[key] = { row = row, qtyBox = qtyBox }
         end
+
         if #filtered == 0 then
             local empty = Instance.new("TextLabel")
             empty.Size = UDim2.new(1, 0, 0, 30)
@@ -793,6 +784,7 @@ local function rebuildList()
             empty.Parent = listFrame
         end
     else
+        -- ✅ FRUITS: tombol + / − (versi semula)
         fruitList = scanFruits()
         local live = {}
         for _, e in ipairs(fruitList) do live[e.uuid] = true end
@@ -901,7 +893,6 @@ local function setTab(tab)
         itemTabBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
         fruitTabBtn.BackgroundColor3 = C_CARD
         fruitTabBtn.TextColor3 = C_TEXT
-        countCard.Visible = true
         itemBtnRow.Visible = true
         fruitBottom.Visible = false
         searchInput.PlaceholderText = "cari item..."
@@ -910,7 +901,6 @@ local function setTab(tab)
         fruitTabBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
         itemTabBtn.BackgroundColor3 = C_CARD
         itemTabBtn.TextColor3 = C_TEXT
-        countCard.Visible = false
         itemBtnRow.Visible = false
         fruitBottom.Visible = true
         searchInput.PlaceholderText = "cari buah..."
@@ -946,61 +936,56 @@ checkBtn.MouseButton1Click:Connect(function()
     end)
 end)
 
--- Count
-local function getCount()
-    local n = tonumber(countBox.Text)
-    if not n or n < 0 then n = 0 end
-    return math.floor(n)
-end
-local function setCount(n)
-    n = math.clamp(n, 0, 99999)
-    countBox.Text = tostring(n)
-end
-minusBtn.MouseButton1Click:Connect(function() setCount(getCount() - 1) end)
-plusBtn.MouseButton1Click:Connect(function() setCount(getCount() + 1) end)
-countBox.FocusLost:Connect(function() setCount(getCount()) end)
-
 -- Send item
 sendItemBtn.MouseButton1Click:Connect(function()
-    if not currentItem then
-        setStatus("❌ pilih item dulu", C_RED)
-        return
+    local list = {}
+    for _, data in pairs(itemEntries) do
+        if data.count > 0 then
+            table.insert(list, {
+                uuid     = data.name,
+                count    = data.count,
+                category = data.category,
+            })
+        end
     end
-    local count = getCount()
-    if count <= 0 then
-        setStatus("❌ count harus > 0", C_RED)
+    if #list == 0 then
+        setStatus("❌ belum ada item di mail", C_RED)
         return
     end
     if not targetId then
         setStatus("❌ target belum di-set", C_RED)
         return
     end
-    setStatus(string.format("🔥 sending %s x%d…", currentItem.name, count), C_WARN)
-    local payload, entries = buildItemPayload(targetId, currentItem.name, count, currentItem.category)
-    if not payload then
-        setStatus("❌ payload fail", C_RED)
-        return
-    end
-    local ok, err = pcall(function() remote:FireServer(payload) end)
+    setStatus("🔥 sending " .. #list .. " item entry…", C_WARN)
+    local expanded = expandEntries(list)
+    local payload  = buildMultiCategoryPayload(targetId, expanded)
+    local ok, err  = pcall(function() remote:FireServer(payload) end)
     if ok then
-        setStatus(string.format("✅ sent %s x%d (%d entry)", currentItem.name, count, #entries), C_GREEN)
+        setStatus(string.format("✅ sent %d item (%d entry)", #list, #expanded), C_GREEN)
+        task.delay(0.5, rebuildList)
+        task.delay(1.5, rebuildList)
     else
         setStatus("❌ error: " .. tostring(err), C_RED)
     end
 end)
 
 clearBtn.MouseButton1Click:Connect(function()
-    currentItem = nil
-    countBox.Text = "0"
+    itemEntries = {}
     rebuildList()
-    setStatus("🗑 selection cleared", C_SUB)
+    setStatus("🗑 mail cleared", C_SUB)
 end)
 
 -- Send fruit
 sendFruitBtn.MouseButton1Click:Connect(function()
     local list = {}
     for uuid, data in pairs(fruitEntries) do
-        table.insert(list, { uuid = uuid, count = data.count, name = data.name })
+        if data.count > 0 then
+            table.insert(list, {
+                uuid     = uuid,
+                count    = data.count,
+                category = CATEGORY_FRUIT,
+            })
+        end
     end
     if #list == 0 then
         setStatus("❌ belum ada buah di mail", C_RED)
@@ -1011,11 +996,13 @@ sendFruitBtn.MouseButton1Click:Connect(function()
         return
     end
     setStatus("🔥 sending " .. #list .. " fruit…", C_WARN)
-    local ok, err = pcall(function()
-        remote:FireServer(buildMultiEntryPayload(targetId, list))
-    end)
+    local expanded = expandEntries(list)
+    local payload  = buildMultiCategoryPayload(targetId, expanded)
+    local ok, err  = pcall(function() remote:FireServer(payload) end)
     if ok then
-        setStatus("✅ sent " .. #list .. " fruit", C_GREEN)
+        setStatus(string.format("✅ sent %d fruit (%d entry)", #list, #expanded), C_GREEN)
+        task.delay(0.5, rebuildList)
+        task.delay(1.5, rebuildList)
     else
         setStatus("❌ error: " .. tostring(err), C_RED)
     end
@@ -1165,14 +1152,28 @@ local function hookBackpack()
     local bp = LocalPlayer:FindFirstChild("Backpack")
     if not bp then return end
     if currentBackpack == bp and backpackConn then return end
-    if backpackConn then backpackConn:Disconnect() end
+    if backpackConn and backpackConn.Disconnect then backpackConn:Disconnect() end
     currentBackpack = bp
-    backpackConn = bp.ChildAdded:Connect(function(child)
+
+    local connAdd = bp.ChildAdded:Connect(function(child)
         if child:GetAttribute("Id") or child:IsA("Tool") then
             task.wait(0.1)
             rebuildList()
         end
     end)
+
+    local connRemove = bp.ChildRemoved:Connect(function(child)
+        if child:GetAttribute("Id") or child:IsA("Tool") then
+            task.defer(rebuildList)
+        end
+    end)
+
+    backpackConn = {
+        Disconnect = function()
+            connAdd:Disconnect()
+            connRemove:Disconnect()
+        end
+    }
 end
 
 hookBackpack()
@@ -1200,4 +1201,4 @@ task.spawn(function()
     end
 end)
 
-print("✅ Mail Sender Combined loaded")
+print("✅ Mail Sender Combined (items TextBox / fruits +/-) loaded")
