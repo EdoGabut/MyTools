@@ -18,8 +18,8 @@ local HttpService     = game:GetService("HttpService")
 local LP = Players.LocalPlayer
 
 --// ==== CONFIG ====
-local ZONES             = {14}
-local ZONE_BASE_PATH    = "game.Workspace.Build.ZoneBuilds.Zone14.Eggs"
+local ZONES             = {13,14}
+local ZONE_BASE_PATH    = "game.Workspace.Build.ZoneBuilds.Zone%d.Eggs"
 local CONTAINER_PATH    = "game.Workspace.AnimalPickups"
 
 local SCAN_INTERVAL     = 0.5
