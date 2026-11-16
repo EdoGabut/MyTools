@@ -1,7 +1,7 @@
 --// ============================================================
---// EGG SCANNER — ZONE 12+13 COMBINED + TELEPORT PER EGG
+--// EGG SCANNER — ZONE 14 ONLY + TELEPORT PER EGG
 --// Streaming sekali jalan, GUI delay 3s, speed 300 toggle
---// Tombol: AUTO move (z13) | NOCLIP | SPEED 300 | HOP | ALERT | MUTE
+--// Tombol: AUTO | ANCHOR | NOCLIP | SPEED 300 | HOP | ALERT | MUTE | ⚡best
 --// Kolom: egg | luck | petkg | hatchanimal | score | tp | esp
 --// ============================================================
 
@@ -18,9 +18,8 @@ local HttpService     = game:GetService("HttpService")
 local LP = Players.LocalPlayer
 
 --// ==== CONFIG ====
-local ZONES             = {13,14}
+local ZONES             = {14}
 local ZONE_BASE_PATH    = "game.Workspace.Build.ZoneBuilds.Zone%d.Eggs"
-local CONTAINER_PATH    = "game.Workspace.AnimalPickups"
 
 local SCAN_INTERVAL     = 0.5
 local ESP_MAX_DIST      = 3000
@@ -31,8 +30,6 @@ local ALERT_SOUND_ID    = "117751546358455"
 local ALERT_VOLUME      = 2
 
 local SPEED_TARGET      = 300
-local AUTO_STOP_DIST    = 10
-local AUTO_TICK         = 0.15
 
 -- Streaming (sekali jalan saat execute)
 local STREAM_TIMEOUT    = 10
@@ -46,9 +43,8 @@ for _, z in ipairs(ZONES) do
 end
 
 local AlertActive       = false
-local TotalAlerts       = 0
 
--- Auto-move state (ke egg zona 13)
+-- Auto-move state (ke egg zona 14)
 local autoActive        = false
 local autoTargetEgg     = nil
 local moveTargetPos     = nil
@@ -56,13 +52,19 @@ local moveConn          = nil
 local lastDist          = math.huge
 local lastProgressT     = 0
 local STUCK_TIMEOUT     = 1.5
+local AUTO_STOP_DIST    = 10
+local AUTO_TICK         = 0.15
 
 --// ==== TELEPORT STATE ====
-local TP_ANCHOR_OFFSET = 3     -- jarak di atas lantai (studs)
-local TP_RAY_LENGTH    = 50    -- panjang raycast ke bawah
-local TP_COOLDOWN      = 0.4   -- detik antar teleport
+local TP_ANCHOR_OFFSET = 3
+local TP_RAY_LENGTH    = 50
+local TP_COOLDOWN      = 0.4
 local lastTPTime       = 0
 local teleporting      = false
+
+--// ==== ANCHOR BUTTON STATE ====
+local anchorCooldown   = 0.5
+local lastAnchorTime   = 0
 
 --// ==== ANIMAL → RARITY MAPPING ====
 local ANIMAL_RARITY = {
@@ -148,16 +150,6 @@ local function fmtNum(n)
     return string.format("%.1f", n)
 end
 
-local function parseNumber(str)
-    if not str or str == "" then return 0 end
-    str = tostring(str):gsub("[%$,%s/]", ""):upper()
-    local num, suffix = str:match("^([%d%.]+)([KMBTQ]?)")
-    if not num then return 0 end
-    local n = tonumber(num) or 0
-    local mult = ({K=1e3, M=1e6, B=1e9, T=1e12, Q=1e15})[suffix] or 1
-    return n * mult
-end
-
 local function bracketTag(br) if br and br ~= "" then return br end return "—" end
 local function bracketColor(br) return BRACKET_COLOR[br or ""] or BRACKET_COLOR["—"] end
 
@@ -224,11 +216,9 @@ local function teleportToEgg(eggModel)
 
     teleporting = true
 
-    -- 1) Cari lantai di bawah posisi egg
     local eggPos = eggPart.Position
     local floorPos = findFloorBelow(eggPos)
 
-    -- 2) Posisi anchor di lantai (tapi tetap dekat egg)
     local anchorPos
     if floorPos then
         anchorPos = floorPos + Vector3.new(0, TP_ANCHOR_OFFSET, 0)
@@ -236,12 +226,10 @@ local function teleportToEgg(eggModel)
         anchorPos = eggPos - Vector3.new(0, 2, 0)
     end
 
-    -- 3) Anchor dulu: pindah ke lantai dekat egg (biar tidak jatuh)
     hrp.AssemblyLinearVelocity = Vector3.zero
     hrp.CFrame = CFrame.new(anchorPos)
     task.wait(0.12)
 
-    -- 4) Baru teleport tepat ke egg (offset sedikit biar tidak nyangkut)
     local dir = (hrp.Position - eggPos)
     dir = Vector3.new(dir.X, 0, dir.Z)
     if dir.Magnitude < 0.1 then
@@ -265,6 +253,35 @@ local function teleportToEgg(eggModel)
 
     status.Text = string.format("⚡ teleport → %s", shortName(eggPart:GetAttribute("EggType") or "egg"))
     status.TextColor3 = C_CYAN
+end
+
+--// ==== ANCHOR (lantai di bawah posisi sekarang) ====
+local function anchorToFloor()
+    local now = os.clock()
+    if now - lastAnchorTime < anchorCooldown then return end
+    lastAnchorTime = now
+
+    local _, hum, hrp = getChar()
+    if not hum or not hrp then
+        status.Text = "❌ anchor: karakter tidak ada"
+        status.TextColor3 = C_RED
+        return
+    end
+
+    local floorPos = findFloorBelow(hrp.Position)
+    if not floorPos then
+        status.Text = "❌ anchor: lantai tidak ditemukan"
+        status.TextColor3 = C_RED
+        return
+    end
+
+    local target = floorPos + Vector3.new(0, TP_ANCHOR_OFFSET, 0)
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.CFrame = CFrame.new(target, target + hrp.CFrame.LookVector)
+    hrp.AssemblyLinearVelocity = Vector3.zero
+
+    status.Text = string.format("⚓ anchor ke lantai (y=%.1f)", floorPos.Y)
+    status.TextColor3 = C_GREEN
 end
 
 --// ==== SPEED KEEPER ====
@@ -369,20 +386,18 @@ local function isEggAlive(model)
     return (p:GetAttribute("Health") or 1) > 0
 end
 
--- Cari egg hidup terdekat KHUSUS ZONA 13
-local function findNearestZone13Egg()
-    local _, _, hrp = getChar()
-    if not hrp then return nil end
-    local pathZ13 = string.format(ZONE_BASE_PATH, 13)
-    local folder = resolvePath(pathZ13)
+-- Cari egg hidup terbaik (score tertinggi) di zona 14
+local function findBestZone14Egg()
+    local folder = resolvePath(string.format(ZONE_BASE_PATH, 14))
     if not folder then return nil end
-    local best, bestDist = nil, math.huge
+    local best, bestScore = nil, -math.huge
     for _, child in ipairs(folder:GetChildren()) do
         if child:IsA("Model") and isEggAlive(child) then
-            local p = child:FindFirstChild("Egg")
-            if p then
-                local d = (hrp.Position - p.Position).Magnitude
-                if d < bestDist then best, bestDist = child, d end
+            local d = getEggData(child)
+            if d and not d.broken then
+                if d.score > bestScore then
+                    best, bestScore = child, d.score
+                end
             end
         end
     end
@@ -430,7 +445,7 @@ local function requestStreamForZone(zoneNum)
     return okReq
 end
 
-print("[stream] mulai streaming zona 12 & 13...")
+print("[stream] mulai streaming zona 14...")
 for _, z in ipairs(ZONES) do
     requestStreamForZone(z)
     task.wait(STREAM_WAIT_AFTER)
@@ -488,7 +503,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -50, 1, 0)
 title.Position = UDim2.new(0, 6, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "🥚 egg_scan z12+13"
+title.Text = "🥚 egg_scan z14"
 title.TextColor3 = C_GREEN
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Font = Enum.Font.Code
@@ -501,7 +516,7 @@ minBtn.Position = UDim2.new(1, -34, 0.5, -7)
 minBtn.BackgroundColor3 = Color3.fromRGB(200, 170, 60)
 minBtn.BorderSizePixel = 0
 minBtn.Text = "—"
-minBtn.TextColor3 = Color3.fromRGB(255,255,255)
+minBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 minBtn.Font = Enum.Font.Code
 minBtn.TextSize = 10
 minBtn.Parent = header
@@ -513,7 +528,7 @@ closeBtn.Position = UDim2.new(1, -18, 0.5, -7)
 closeBtn.BackgroundColor3 = C_RED
 closeBtn.BorderSizePixel = 0
 closeBtn.Text = "x"
-closeBtn.TextColor3 = Color3.fromRGB(255,255,255)
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 closeBtn.Font = Enum.Font.Code
 closeBtn.TextSize = 10
 closeBtn.Parent = header
@@ -560,7 +575,7 @@ status.TextXAlignment = Enum.TextXAlignment.Left
 status.Parent = main
 table.insert(collapseTargets, status)
 
--- Button bar (AUTO | NOCLIP | SPEED | HOP | ALERT | MUTE)
+-- Button bar
 local btnBar = Instance.new("Frame")
 btnBar.Size = UDim2.new(1, -10, 0, BTN_H)
 btnBar.Position = UDim2.new(0, 5, 0, HEADER_H + STATUS_H + 6)
@@ -583,22 +598,23 @@ local function makeBtn(text, x, w, color, txtColor)
     return b
 end
 
-local autoBtn   = makeBtn("➡AUTO z13",  0,   70, Color3.fromRGB(60, 30, 30), Color3.fromRGB(255, 120, 120))
-local noclipBtn = makeBtn("noclip",     74,  56, C_RED, Color3.fromRGB(255,255,255))
-local speedBtn  = makeBtn("⚡300",      134, 56, C_ACCENT, Color3.fromRGB(255,255,255))
-local hopBtn    = makeBtn("🔀 hop",     194, 56, C_ACCENT, Color3.fromRGB(255,255,255))
-local alertBtn  = makeBtn("🔔 alert",   254, 64, C_CARD,   C_SUB)
-local muteBtn   = makeBtn("🔕 mute",    322, 56, C_CARD,   C_SUB)
-local tpBestBtn = makeBtn("⚡best",     382, 52, C_PURPLE, Color3.fromRGB(255,255,255))
+local autoBtn   = makeBtn("➡AUTO",  0,   50, Color3.fromRGB(60, 30, 30), Color3.fromRGB(255, 120, 120))
+local anchorBtn = makeBtn("⚓anch",  54,  46, C_CYAN, Color3.fromRGB(255,255,255))
+local noclipBtn = makeBtn("noclip", 104, 46, C_RED,  Color3.fromRGB(255,255,255))
+local speedBtn  = makeBtn("⚡300",  154, 46, C_ACCENT, Color3.fromRGB(255,255,255))
+local hopBtn    = makeBtn("🔀hop",  204, 46, C_ACCENT, Color3.fromRGB(255,255,255))
+local alertBtn  = makeBtn("🔔alert",254, 50, C_CARD,  C_SUB)
+local muteBtn   = makeBtn("🔕mute", 308, 50, C_CARD,  C_SUB)
+local tpBestBtn = makeBtn("⚡best", 362, 50, C_PURPLE, Color3.fromRGB(255,255,255))
 
---// ==== AUTO MOVE (ke egg zona 13) ====
+--// ==== AUTO MOVE (ke egg terbaik zona 14) ====
 local function updateAutoStatus()
     if not autoActive then return end
     if moveTargetPos then
-        status.Text = "→ AUTO z13 | moving to egg"
+        status.Text = "→ AUTO z14 | moving to egg"
         status.TextColor3 = C_GREEN
     else
-        status.Text = "→ AUTO z13 | cari egg..."
+        status.Text = "→ AUTO z14 | cari egg..."
         status.TextColor3 = C_GOLD
     end
 end
@@ -633,7 +649,7 @@ task.spawn(function()
                     if d <= AUTO_STOP_DIST then
                         moveTargetPos = nil
                         stopMovement()
-                        status.Text = "✔ AUTO z13 | sampai di egg, tunggu break"
+                        status.Text = "✔ AUTO z14 | sampai di egg, tunggu break"
                         status.TextColor3 = C_GOLD
                         return
                     end
@@ -657,10 +673,10 @@ task.spawn(function()
                     moveTargetPos = nil
                 end
             else
-                local nearest = findNearestZone13Egg()
-                if nearest then
-                    autoTargetEgg = nearest
-                    local ep = nearest:FindFirstChild("Egg")
+                local best = findBestZone14Egg()
+                if best then
+                    autoTargetEgg = best
+                    local ep = best:FindFirstChild("Egg")
                     if ep then
                         moveTargetPos = ep.Position
                         lastDist = math.huge
@@ -669,7 +685,7 @@ task.spawn(function()
                 else
                     moveTargetPos = nil
                     stopMovement()
-                    status.Text = "AUTO z13 | tidak ada egg hidup"
+                    status.Text = "AUTO z14 | tidak ada egg hidup"
                     status.TextColor3 = C_GRAY
                 end
             end
@@ -684,13 +700,13 @@ autoBtn.MouseButton1Click:Connect(function()
         moveTargetPos = nil
         lastDist = math.huge
         lastProgressT = os.clock()
-        autoBtn.Text = "■AUTO z13"
+        autoBtn.Text = "■AUTO"
         autoBtn.BackgroundColor3 = Color3.fromRGB(40, 60, 40)
         autoBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
-        status.Text = "▶ AUTO ke zona 13 ON"
+        status.Text = "▶ AUTO ke egg terbaik z14 ON"
         status.TextColor3 = C_GREEN
     else
-        autoBtn.Text = "➡AUTO z13"
+        autoBtn.Text = "➡AUTO"
         autoBtn.BackgroundColor3 = Color3.fromRGB(60, 30, 30)
         autoBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
         autoTargetEgg = nil
@@ -699,6 +715,11 @@ autoBtn.MouseButton1Click:Connect(function()
         status.Text = "AUTO OFF"
         status.TextColor3 = C_GRAY
     end
+end)
+
+--// ==== ANCHOR BUTTON ====
+anchorBtn.MouseButton1Click:Connect(function()
+    anchorToFloor()
 end)
 
 --// ==== NOCLIP BUTTON ====
@@ -754,14 +775,14 @@ local function refreshAlertBtn()
         muteBtn.Text = "🔇 muted"
         alertBtn.BackgroundColor3 = C_CARD
         alertBtn.TextColor3 = C_SUB
-        alertBtn.Text = "🔔 alert"
+        alertBtn.Text = "🔔alert"
     else
         muteBtn.BackgroundColor3 = C_CARD
         muteBtn.TextColor3 = C_SUB
-        muteBtn.Text = "🔕 mute"
+        muteBtn.Text = "🔕mute"
         alertBtn.BackgroundColor3 = AlertActive and C_GREEN or C_CARD
         alertBtn.TextColor3 = AlertActive and C_BG or C_SUB
-        alertBtn.Text = AlertActive and "🔔 on" or "🔔 alert"
+        alertBtn.Text = AlertActive and "🔔 on" or "🔔alert"
     end
 end
 
@@ -803,9 +824,9 @@ hopBtn.MouseButton1Click:Connect(function()
         return HttpService:JSONDecode(game:HttpGet(url))
     end)
     if not ok or not resp or not resp.data then
-        hopBtn.Text = "❌ fail"
+        hopBtn.Text = "❌fail"
         task.wait(1.5)
-        hopBtn.Text = "🔀 hop"
+        hopBtn.Text = "🔀hop"
         hopBtn.BackgroundColor3 = C_ACCENT
         hopBtn.TextColor3 = Color3.fromRGB(255,255,255)
         hopping = false
@@ -816,24 +837,24 @@ hopBtn.MouseButton1Click:Connect(function()
         if s.playing < s.maxPlayers then table.insert(servers, s.id) end
     end
     if #servers == 0 then
-        hopBtn.Text = "❌ no srv"
+        hopBtn.Text = "❌no srv"
         task.wait(1.5)
-        hopBtn.Text = "🔀 hop"
+        hopBtn.Text = "🔀hop"
         hopBtn.BackgroundColor3 = C_ACCENT
         hopBtn.TextColor3 = Color3.fromRGB(255,255,255)
         hopping = false
         return
     end
     local jobId = servers[math.random(1, #servers)]
-    hopBtn.Text = "🔀 going"
+    hopBtn.Text = "🔀going"
     local tpOk, tpErr = pcall(function()
         TeleportService:TeleportToPlaceInstance(placeId, jobId, LP)
     end)
     if not tpOk then
         warn("[Hop] gagal: " .. tostring(tpErr))
-        hopBtn.Text = "❌ tp"
+        hopBtn.Text = "❌tp"
         task.wait(1.5)
-        hopBtn.Text = "🔀 hop"
+        hopBtn.Text = "🔀hop"
         hopBtn.BackgroundColor3 = C_ACCENT
         hopBtn.TextColor3 = Color3.fromRGB(255,255,255)
         hopping = false
@@ -1153,7 +1174,6 @@ local function updateRow(rd, d)
     end
 end
 
---// SORT: Score tertinggi di atas, lalu PetKg sebagai tie-breaker
 local function sortEggs(list)
     table.sort(list, function(a, b)
         local da, db = a.data, b.data
@@ -1174,7 +1194,6 @@ end
 local function scanEggs()
     local current = {}
     local anyFolder = false
-    local missingZones = {}
 
     for i, pathStr in ipairs(ZonePaths) do
         local zoneNum = ZONES[i]
@@ -1190,13 +1209,11 @@ local function scanEggs()
                     end
                 end
             end
-        else
-            table.insert(missingZones, zoneNum)
         end
     end
 
     if not anyFolder then
-        status.Text = "❌ zona 12 & 13 tidak ditemukan"
+        status.Text = "❌ zona 14 tidak ditemukan"
         status.TextColor3 = C_RED
         for model, rd in pairs(rows) do
             if rd.row and rd.row.Parent then rd.row:Destroy() end
@@ -1240,7 +1257,6 @@ local function scanEggs()
     end
 
     local total, broken, maxPred, alertCount, hatchCount = 0, 0, 0, 0, 0
-    local z12count, z13count = 0, 0
     for _, d in pairs(current) do
         total = total + 1
         if d.broken then broken = broken + 1 end
@@ -1249,30 +1265,21 @@ local function scanEggs()
             alertCount = alertCount + 1
         end
         if d.hatchAnimal then hatchCount = hatchCount + 1 end
-        if d.zone == 12 then z12count = z12count + 1
-        elseif d.zone == 13 then z13count = z13count + 1 end
     end
 
-    local zoneStr = string.format("[z12:%d z13:%d]", z12count, z13count)
-    if #missingZones > 0 then
-        zoneStr = zoneStr .. " miss:" .. table.concat(missingZones, ",")
-    end
-
-    if autoActive then
-        return
-    end
+    if autoActive then return end
 
     if alertCount > 0 then
-        status.Text = string.format("%s ⚠ALERT%d | %degg | top %s",
-            zoneStr, alertCount, total, fmtNum(maxPred))
+        status.Text = string.format("[z14] ⚠ALERT%d | %degg | top %s",
+            alertCount, total, fmtNum(maxPred))
         status.TextColor3 = C_RED
     elseif hatchCount > 0 then
-        status.Text = string.format("%s 🐾%dhatch | %degg | top %s",
-            zoneStr, hatchCount, total, fmtNum(maxPred))
+        status.Text = string.format("[z14] 🐾%dhatch | %degg | top %s",
+            hatchCount, total, fmtNum(maxPred))
         status.TextColor3 = C_PURPLE
     else
-        status.Text = string.format("%s %degg | top %s",
-            zoneStr, total, fmtNum(maxPred))
+        status.Text = string.format("[z14] %degg | top %s",
+            total, fmtNum(maxPred))
         status.TextColor3 = C_GREEN
     end
 end
