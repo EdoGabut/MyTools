@@ -18,7 +18,7 @@ local HttpService     = game:GetService("HttpService")
 local LP = Players.LocalPlayer
 
 --// ==== CONFIG ====
-local ZONES             = {12, 13}
+local ZONES             = {12, 13, 14}
 local ZONE_BASE_PATH    = "game.Workspace.Build.ZoneBuilds.Zone%d.Eggs"
 local CONTAINER_PATH    = "game.Workspace.AnimalPickups"
 
